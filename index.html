@@ -419,9 +419,9 @@
       </div>
 
       <div class="card section-gap">
-        <h2>Global Risk Signals <span class="badge">World Monitor · Experimental</span></h2>
+        <h2>Global Risk Signals <span class="badge">GDELT (direct) + World Monitor</span></h2>
         <div class="foot-note" style="margin-bottom:12px;">
-          Ye ek free, open-source community API hai (established financial data provider nahi) — treat karo ek supplementary signal ki tarah, primary source nahi. Pehli baar test kar rahe hain, response format thoda adjust karna pad sakta hai.
+          "Geopolitical Risk" button ab GDELT se direct data leta hai (free, no key, koi proxy nahi chahiye — GDELT khud CORS allow karta hai). "Global Market Cues" abhi bhi World Monitor try karta hai, jiski API sirf apni khud ki website se allow hoti hai (third-party access blocked hai) — isliye wo abhi kaam nahi karega jab tak koi alag market-data source na dhoondein.
         </div>
 
         <div class="row2">
@@ -1046,33 +1046,39 @@ async function fetchGeoRisk(){
   const btn = document.getElementById('geoRiskBtn');
   const status = document.getElementById('geoRiskStatus');
   const resultDiv = document.getElementById('geoRiskResult');
-  const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
 
   btn.disabled = true; btn.textContent = '⤓ Fetching...';
-  status.textContent = 'World Monitor se India ka geopolitical risk score la raha hoon...';
+  status.textContent = 'GDELT se India-related news ka overall tone (sentiment) la raha hoon...';
   status.style.color = 'var(--dim)';
 
   try{
-    const url = `${proxyBase}/api/worldmonitor?path=intelligence/v1/get-risk-scores&country=IN`;
+    // GDELT DOC 2.0 API explicitly supports CORS for embedding, so this is called
+    // directly from the browser — no server-side proxy needed. We use the
+    // "timelinetone" mode: average sentiment/tone of worldwide news mentioning
+    // "India" over the last few days. More negative tone ≈ more negative/tense
+    // coverage (conflict, crisis, market stress) — used here as a rough proxy for
+    // geopolitical/news-driven risk, not an official instability index.
+    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=India&mode=timelinetone&format=json&timespan=3day`;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     const json = await resp.json();
-    if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-    // Response shape isn't fully confirmed yet (experimental integration) — try a few
-    // plausible field names, and fall back to showing the raw JSON so we can see
-    // exactly what came back and adjust parsing accordingly.
-    const score = json.data?.overallScore ?? json.data?.score ?? json.overallScore ?? json.score ?? json.riskScore;
-    if(score != null){
-      const scoreColor = score > 66 ? 'var(--pe)' : (score > 33 ? 'var(--amber)' : 'var(--ce)');
+    const series = json.timeline?.[0]?.data;
+    if(Array.isArray(series) && series.length){
+      const latest = series[series.length - 1];
+      const tone = latest.value; // GDELT tone roughly ranges -10 (very negative) to +10 (very positive)
+      // Map tone to a rough 0-100 "risk" scale: 0 tone -> 50, more negative -> higher risk.
+      const riskScore = Math.max(0, Math.min(100, 50 - tone*5));
+      const scoreColor = riskScore > 66 ? 'var(--pe)' : (riskScore > 33 ? 'var(--amber)' : 'var(--ce)');
       resultDiv.innerHTML = `
         <div class="g-cell hi">
-          <div class="label">India — Country Instability Index</div>
-          <div class="val" style="color:${scoreColor};">${fmt(score,1)}/100</div>
+          <div class="label">India-related news tone (GDELT, last 3 days)</div>
+          <div class="val" style="color:${scoreColor};">${fmt(tone,2)} tone → ~${fmt(riskScore,0)}/100 risk-proxy</div>
         </div>`;
-      status.textContent = '✓ Mil gaya';
+      status.textContent = '✓ Mil gaya (GDELT — direct, no key/proxy needed)';
       status.style.color = 'var(--ce)';
     } else {
-      resultDiv.innerHTML = `<div class="foot-note">Expected field nahi mila, raw response neeche hai (isse dekh kar parsing adjust karenge):</div>
+      resultDiv.innerHTML = `<div class="foot-note">Expected 'timeline' data nahi mila, raw response neeche hai (isse dekh kar parsing adjust karenge):</div>
         <pre style="font-size:10px;color:var(--dim);white-space:pre-wrap;background:var(--panel2);padding:8px;border-radius:5px;max-height:200px;overflow:auto;">${JSON.stringify(json,null,2)}</pre>`;
       status.textContent = '⚠ Response mila par format pata nahi — raw JSON neeche dekh lo';
       status.style.color = 'var(--amber)';
