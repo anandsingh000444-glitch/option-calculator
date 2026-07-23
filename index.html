@@ -419,9 +419,9 @@
       </div>
 
       <div class="card section-gap">
-        <h2>Global Risk Signals <span class="badge">GDELT (direct) + World Monitor</span></h2>
+        <h2>Global Risk Signals <span class="badge">GDELT + Stooq (both experimental)</span></h2>
         <div class="foot-note" style="margin-bottom:12px;">
-          "Geopolitical Risk" button ab GDELT se direct data leta hai (free, no key, koi proxy nahi chahiye — GDELT khud CORS allow karta hai). "Global Market Cues" abhi bhi World Monitor try karta hai, jiski API sirf apni khud ki website se allow hoti hai (third-party access blocked hai) — isliye wo abhi kaam nahi karega jab tak koi alag market-data source na dhoondein.
+          "Geopolitical Risk" GDELT se direct aata hai (official free API, CORS-enabled). "Global Market Cues" Stooq se aata hai — Stooq ka koi official documented API nahi hai, ye ek widely-used community endpoint hai, isliye ise bhi ek supplementary/experimental signal ki tarah treat karo, primary source nahi.
         </div>
 
         <div class="row2">
@@ -1100,38 +1100,40 @@ async function fetchGlobalCues(){
   const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
 
   btn.disabled = true; btn.textContent = '⤓ Fetching...';
-  status.textContent = 'World Monitor se global market cues la raha hoon...';
+  status.textContent = 'Stooq se global market cues la raha hoon...';
   status.style.color = 'var(--dim)';
 
   try{
-    const symbols = '^DJI,^IXIC,CL=F,DX-Y.NYB'; // Dow, Nasdaq, Crude oil, Dollar index — common Indian-market overnight cues
-    const url = `${proxyBase}/api/worldmonitor?path=market/v1/list-market-quotes&symbols=${encodeURIComponent(symbols)}`;
+    const symbols = '^dji,^ndq,cl.f,usdinr'; // Dow, Nasdaq, Crude oil, USD/INR — common Indian-market overnight cues
+    const url = `${proxyBase}/api/stooq-quotes?symbols=${encodeURIComponent(symbols)}`;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     const json = await resp.json();
     if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
-    const items = json.items || json.data?.items || json.quotes;
+    const items = json.data;
     if(Array.isArray(items) && items.length){
       resultDiv.innerHTML = `<div class="greeks-grid section-gap" style="grid-template-columns:repeat(2,1fr);">` +
         items.map(it=>{
-          const name = it.symbol || it.name || it.ticker || 'Unknown';
-          const change = it.changePercent ?? it.percentChange ?? it.change;
-          const changeColor = (change>=0) ? 'var(--ce)' : 'var(--pe)';
+          const name = it.Symbol || it.symbol || 'Unknown';
+          const close = parseFloat(it.Close);
+          const open = parseFloat(it.Open);
+          const change = (open && close) ? ((close-open)/open*100) : null;
+          const changeColor = (change!=null && change>=0) ? 'var(--ce)' : 'var(--pe)';
           return `<div class="g-cell">
             <div class="label">${name}</div>
-            <div class="val" style="color:${changeColor};font-size:15px;">${change!=null ? (change>=0?'+':'')+fmt(change,2)+'%' : (it.price ?? it.value ?? '—')}</div>
+            <div class="val" style="color:${changeColor};font-size:15px;">${!isNaN(close)?fmt(close,2):'—'} ${change!=null ? `<span style="font-size:12px;">(${change>=0?'+':''}${fmt(change,2)}%)</span>` : ''}</div>
           </div>`;
         }).join('') + `</div>`;
-      status.textContent = '✓ Mil gaya';
+      status.textContent = '✓ Mil gaya (Stooq — no official API, best-effort)';
       status.style.color = 'var(--ce)';
     } else {
-      resultDiv.innerHTML = `<div class="foot-note">Expected 'items' array nahi mila, raw response neeche hai (isse dekh kar parsing adjust karenge):</div>
+      resultDiv.innerHTML = `<div class="foot-note">Expected data array nahi mila, raw response neeche hai (isse dekh kar parsing adjust karenge):</div>
         <pre style="font-size:10px;color:var(--dim);white-space:pre-wrap;background:var(--panel2);padding:8px;border-radius:5px;max-height:200px;overflow:auto;">${JSON.stringify(json,null,2)}</pre>`;
       status.textContent = '⚠ Response mila par format pata nahi — raw JSON neeche dekh lo';
       status.style.color = 'var(--amber)';
     }
   } catch(err){
-    console.error('World Monitor global-cues fetch error:', err);
+    console.error('Stooq global-cues fetch error:', err);
     status.textContent = '✗ ' + (err.message || String(err));
     status.style.color = 'var(--pe)';
   } finally {
