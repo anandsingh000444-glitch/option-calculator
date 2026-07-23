@@ -393,6 +393,17 @@
       </div>
 
       <div class="card section-gap">
+        <h2>Self-Learning Accuracy Tracker <span class="badge">Statistical calibration, not AI</span></h2>
+        <div class="foot-note" style="margin-bottom:12px;">
+          Jab bhi market Entry/SL/TP1/TP2/TP3 tak actually pahunchta hai, system apni prediction ko real premium se compare karta hai aur farak (error) ko yaad rakhta hai — strike ke moneyness (ITM/ATM/OTM) ke hisaab se. Time ke saath, future predictions mein yehi learned correction automatically apply ho jati hai.
+        </div>
+        <div id="learningTrackerBody"></div>
+        <button type="button" onclick="resetLearning()" style="width:100%;margin-top:12px;padding:7px 0;background:none;border:1px solid var(--pe);color:var(--pe);border-radius:5px;font-family:var(--mono);font-size:11px;cursor:pointer;">
+          ⟲ Reset Learning (saara calibration data clear karo)
+        </button>
+      </div>
+
+      <div class="card section-gap">
         <h2>Market Sentiment <span class="badge">Live, bina manual entry ke</span></h2>
         <label>India VIX (Fear Gauge) %</label>
         <input type="number" id="vixInput" value="13.5" step="0.1">
@@ -592,6 +603,195 @@ async function fetchUpstoxChain(){
   }
 }
 
+
+// ==================================================================================
+// SELF-LEARNING PREDICTION CALIBRATION SYSTEM
+// ------------------------------------------------------------------------------
+// Honest framing: this is NOT a neural network or "AI" in the buzzword sense.
+// It's a transparent statistical feedback loop: each time you set an Entry/SL/TP
+// level, we snapshot what we predicted the CE/PE premium would be. Later, once
+// the market actually reaches that level, we compare our prediction to the real
+// live premium and record the error. Errors are grouped by option moneyness
+// (ITM/ATM/OTM) and averaged over time (an EWMA — exponentially weighted moving
+// average), and that running average is then applied as a small correction to
+// future predictions in the same bucket. It genuinely improves accuracy over
+// time as more real outcomes accumulate — it just does it via simple, inspectable
+// statistics rather than a trained model.
+// ==================================================================================
+
+let activePrediction = null;
+let lastCheckedSpotForPredictions = null;
+
+function loadActivePrediction(){
+  try{ return JSON.parse(localStorage.getItem('optcalc_active_prediction') || 'null'); }
+  catch(e){ return null; }
+}
+function saveActivePrediction(){
+  try{ localStorage.setItem('optcalc_active_prediction', JSON.stringify(activePrediction)); }
+  catch(e){ /* ignore */ }
+}
+function loadCalibration(){
+  try{ return JSON.parse(localStorage.getItem('optcalc_calibration') || '{}'); }
+  catch(e){ return {}; }
+}
+function saveCalibration(obj){
+  try{ localStorage.setItem('optcalc_calibration', JSON.stringify(obj)); }
+  catch(e){ /* ignore */ }
+}
+function loadPredictionHistory(){
+  try{ return JSON.parse(localStorage.getItem('optcalc_pred_history') || '[]'); }
+  catch(e){ return []; }
+}
+function savePredictionHistory(arr){
+  try{ localStorage.setItem('optcalc_pred_history', JSON.stringify(arr.slice(-100))); } // keep last 100
+  catch(e){ /* ignore */ }
+}
+
+function moneynessBucket(levelVal, K, type){
+  const diffPct = (levelVal - K) / K;
+  if(type==='CE'){
+    if(diffPct > 0.003) return 'ITM';
+    if(diffPct < -0.003) return 'OTM';
+    return 'ATM';
+  } else {
+    if(diffPct < -0.003) return 'ITM';
+    if(diffPct > 0.003) return 'OTM';
+    return 'ATM';
+  }
+}
+
+function updateCalibration(bucketKey, error){
+  const calib = loadCalibration();
+  const prev = calib[bucketKey] || { correction: 0, n: 0 };
+  const alpha = 0.3; // weight given to the newest error vs. the accumulated history
+  const newCorrection = prev.n === 0 ? error : (alpha*error + (1-alpha)*prev.correction);
+  calib[bucketKey] = { correction: newCorrection, n: prev.n + 1 };
+  saveCalibration(calib);
+}
+
+// Snapshot a prediction the first time a level appears or its target price changes.
+// Deliberately does NOT overwrite an already-pending prediction just because IV/DTE
+// shifted slightly — we want to test whether THAT original prediction holds up.
+function updatePredictions(tradeK, levelDefs){
+  if(!activePrediction) activePrediction = loadActivePrediction();
+  if(!activePrediction || activePrediction.strike !== tradeK){
+    activePrediction = { strike: tradeK, levels: {} };
+  }
+  levelDefs.forEach(({key, target, predictedCe, predictedPe})=>{
+    const existing = activePrediction.levels[key];
+    if(!existing || Math.abs(existing.target - target) > 0.01){
+      activePrediction.levels[key] = {
+        target, predictedCe, predictedPe,
+        resolved: false,
+        actualCe: null, actualPe: null,
+        predictedAt: Date.now()
+      };
+    }
+  });
+  saveActivePrediction();
+}
+
+// Checks whether the live spot has reached (or crossed) any pending level's target,
+// and if so, captures the real live premium at that moment for comparison.
+function checkPredictionResolutions(currentSpot, tradeK){
+  if(!activePrediction || activePrediction.strike !== tradeK){
+    lastCheckedSpotForPredictions = currentSpot;
+    return;
+  }
+  const step = parseFloat(document.getElementById('stepSize').value) || 50;
+  const tolerance = Math.max(5, step/4);
+  const tLiveNow = liveChain ? liveChain[tradeK] : null;
+  const ceLtpNow = (tLiveNow && tLiveNow.ceLtp!=null) ? tLiveNow.ceLtp : null;
+  const peLtpNow = (tLiveNow && tLiveNow.peLtp!=null) ? tLiveNow.peLtp : null;
+
+  Object.keys(activePrediction.levels).forEach(key=>{
+    const lvl = activePrediction.levels[key];
+    if(lvl.resolved) return;
+    const target = lvl.target;
+    let hit = Math.abs(currentSpot - target) <= tolerance;
+    if(!hit && lastCheckedSpotForPredictions != null){
+      const prevSide = lastCheckedSpotForPredictions - target;
+      const currSide = currentSpot - target;
+      if(prevSide !== 0 && currSide !== 0 && (prevSide < 0) !== (currSide < 0)) hit = true; // crossed through it
+    }
+    if(hit && ceLtpNow != null && peLtpNow != null){
+      lvl.resolved = true;
+      lvl.actualCe = ceLtpNow;
+      lvl.actualPe = peLtpNow;
+      lvl.resolvedAt = Date.now();
+      lvl.errCe = lvl.actualCe - lvl.predictedCe;
+      lvl.errPe = lvl.actualPe - lvl.predictedPe;
+
+      updateCalibration('CE_' + moneynessBucket(target, tradeK, 'CE'), lvl.errCe);
+      updateCalibration('PE_' + moneynessBucket(target, tradeK, 'PE'), lvl.errPe);
+
+      const history = loadPredictionHistory();
+      history.push({
+        key, strike: tradeK, target,
+        predictedCe: lvl.predictedCe, actualCe: lvl.actualCe, errCe: lvl.errCe,
+        predictedPe: lvl.predictedPe, actualPe: lvl.actualPe, errPe: lvl.errPe,
+        resolvedAt: lvl.resolvedAt
+      });
+      savePredictionHistory(history);
+    }
+  });
+  saveActivePrediction();
+  lastCheckedSpotForPredictions = currentSpot;
+}
+
+function renderLearningTracker(){
+  const container = document.getElementById('learningTrackerBody');
+  if(!container) return;
+
+  const calib = loadCalibration();
+  const history = loadPredictionHistory();
+  const buckets = ['CE_ITM','CE_ATM','CE_OTM','PE_ITM','PE_ATM','PE_OTM'];
+
+  const bucketRows = buckets.map(b=>{
+    const c = calib[b];
+    const label = b.replace('_',' ');
+    if(!c || c.n === 0){
+      return `<div class="g-cell"><div class="label">${label}</div><div class="val" style="font-size:13px;color:var(--dim);">Koi data nahi abhi</div></div>`;
+    }
+    const trusted = c.n >= 3;
+    return `<div class="g-cell${trusted?' hi':''}">
+      <div class="label">${label} <span class="badge" style="padding:1px 4px;">${c.n} samples</span></div>
+      <div class="val" style="font-size:16px;color:${trusted?'var(--amber)':'var(--dim)'};">${c.correction>=0?'+':''}${c.correction.toFixed(2)}${!trusted?' (abhi trust nahi kar rahe, 3+ chahiye)':''}</div>
+    </div>`;
+  }).join('');
+
+  const recent = history.slice(-6).reverse();
+  const recentRows = recent.length ? recent.map(h=>{
+    const t = new Date(h.resolvedAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+    return `<tr>
+      <td>${t}</td><td>${h.key} @ ${fmt(h.target,0)}</td>
+      <td>${fmt(h.predictedCe)}</td><td>${fmt(h.actualCe)}</td><td class="${h.errCe>=0?'up':'down'}">${h.errCe>=0?'+':''}${fmt(h.errCe)}</td>
+      <td>${fmt(h.predictedPe)}</td><td>${fmt(h.actualPe)}</td><td class="${h.errPe>=0?'up':'down'}">${h.errPe>=0?'+':''}${fmt(h.errPe)}</td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="8" style="text-align:center;color:var(--dim);">Abhi koi level 'hit' nahi hua hai — jaise jaise market Entry/SL/TP tak pahunchega, yahan record ban'ta jayega.</td></tr>`;
+
+  container.innerHTML = `
+    <div class="greeks-grid section-gap" style="grid-template-columns:repeat(3,1fr);">${bucketRows}</div>
+    <div class="foot-note section-gap">Total resolved predictions so far: <b>${history.length}</b></div>
+    <div class="table-wrap section-gap">
+      <table>
+        <thead><tr><th style="text-align:left;">Time</th><th style="text-align:left;">Level</th><th>CE Predicted</th><th>CE Actual</th><th>CE Error</th><th>PE Predicted</th><th>PE Actual</th><th>PE Error</th></tr></thead>
+        <tbody>${recentRows}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function resetLearning(){
+  if(!confirm('Poora learning history aur calibration reset ho jayega. Pakka?')) return;
+  try{
+    localStorage.removeItem('optcalc_calibration');
+    localStorage.removeItem('optcalc_pred_history');
+    localStorage.removeItem('optcalc_active_prediction');
+  }catch(e){}
+  activePrediction = null;
+  renderLearningTracker();
+}
 
 function showAllStrikes(){
   const step = parseFloat(document.getElementById('stepSize').value) || 50;
@@ -967,16 +1167,27 @@ function render(){
   const ceModelAtSpot = bs(spot, tradeK, dte, tCeIv, rate, 'CE').price;
   const peModelAtSpot = bs(spot, tradeK, dte, tPeIv, rate, 'PE').price;
 
+  // Self-learning calibration: a running, per-moneyness-bucket average of how far off
+  // our past predictions were from what the market actually showed once it reached
+  // that level. This is a statistical bias-correction (EWMA of past errors), not a
+  // neural network — but it genuinely improves over time as more predictions resolve.
+  const calibSnapshot = loadCalibration();
+
   function anchoredPrice(levelVal, type){
+    let rawPrice;
     if(type==='CE'){
       const modelAtLevel = bs(levelVal, tradeK, dte, tCeIv, rate, 'CE').price;
       const delta = modelAtLevel - ceModelAtSpot;
-      return ceLiveAnchor!=null ? Math.max(0, ceLiveAnchor + delta) : modelAtLevel;
+      rawPrice = ceLiveAnchor!=null ? Math.max(0, ceLiveAnchor + delta) : modelAtLevel;
     } else {
       const modelAtLevel = bs(levelVal, tradeK, dte, tPeIv, rate, 'PE').price;
       const delta = modelAtLevel - peModelAtSpot;
-      return peLiveAnchor!=null ? Math.max(0, peLiveAnchor + delta) : modelAtLevel;
+      rawPrice = peLiveAnchor!=null ? Math.max(0, peLiveAnchor + delta) : modelAtLevel;
     }
+    const bucketKey = type + '_' + moneynessBucket(levelVal, tradeK, type);
+    const bucket = calibSnapshot[bucketKey];
+    const correction = (bucket && bucket.n >= 3) ? bucket.correction : 0; // wait for a few samples before trusting it
+    return Math.max(0, rawPrice + correction);
   }
 
   const levels = [
@@ -1013,6 +1224,15 @@ function render(){
       peDEl.className = peD>=0?'up':'down';
     }
   });
+
+  // ---- Self-Learning: log predictions for each level, and check if any were "hit" ----
+  const predLevelDefs = levels.map(({key,id})=>{
+    const target = parseFloat(document.getElementById(id).value) || entryLevelVal;
+    return { key, target, predictedCe: anchoredPrice(target,'CE'), predictedPe: anchoredPrice(target,'PE') };
+  });
+  updatePredictions(tradeK, predLevelDefs);
+  checkPredictionResolutions(spot, tradeK);
+  renderLearningTracker();
 
   // ---- Signal Direction Auto-detect + Risk:Reward + Rupee P&L ----
   const lotSize = Math.max(1, parseInt(document.getElementById('lotSize').value) || 75);
