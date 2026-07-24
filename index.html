@@ -1106,14 +1106,22 @@ async function fetchGlobalCues(){
     if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
     const items = json.data;
+    const friendlyNames = {
+      '^DJI': { name: 'Dow Jones (US)', note: 'US ka bada stock index — overnight move, India ko subah affect karta hai' },
+      '^IXIC': { name: 'Nasdaq (US)', note: 'US tech stocks — IT sector (TCS/Infy) is se juda hai' },
+      'CL=F': { name: 'Crude Oil (WTI)', note: 'Tel mehnga → Rupee kamzor, inflation badh sakta hai' },
+      'INR=X': { name: 'USD/INR', note: 'Zyada number = Rupee kamzor' },
+    };
     if(Array.isArray(items) && items.length && items.some(it=>it.price!=null)){
       resultDiv.innerHTML = `<div class="greeks-grid section-gap" style="grid-template-columns:repeat(2,1fr);">` +
         items.map(it=>{
           const change = it.changePercent;
           const changeColor = (change!=null && change>=0) ? 'var(--ce)' : 'var(--pe)';
+          const info = friendlyNames[it.symbol] || { name: it.symbol, note: '' };
           return `<div class="g-cell">
-            <div class="label">${it.symbol}</div>
+            <div class="label">${info.name}</div>
             <div class="val" style="color:${changeColor};font-size:15px;">${it.price!=null?fmt(it.price,2):'—'} ${change!=null ? `<span style="font-size:12px;">(${change>=0?'+':''}${fmt(change,2)}%)</span>` : ''}</div>
+            ${info.note ? `<div style="font-size:10px;color:var(--dim);margin-top:3px;">${info.note}</div>` : ''}
           </div>`;
         }).join('') + `</div>`;
       status.textContent = '✓ Mil gaya (Yahoo Finance — unofficial, but widely reliable)';
