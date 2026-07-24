@@ -15,7 +15,11 @@ export default async function handler(req, res) {
   const symbols = req.query.symbols || '^dji,^ndq,cl.f,usdinr';
 
   try {
-    const url = `https://stooq.com/q/l/?s=${encodeURIComponent(symbols)}&f=sd2t2ohlcv&h&e=csv`;
+    // Encode each symbol individually but keep the comma separator literal —
+    // encoding the whole string (including commas) turns them into %2C, which
+    // Stooq's endpoint doesn't split on, silently returning zero rows.
+    const symbolList = symbols.split(',').map(s => encodeURIComponent(s.trim())).join(',');
+    const url = `https://stooq.com/q/l/?s=${symbolList}&f=sd2t2ohlcv&h&e=csv`;
     const resp = await fetch(url);
     const csvText = await resp.text();
 
@@ -26,8 +30,12 @@ export default async function handler(req, res) {
       const obj = {};
       header.forEach((h, i) => { obj[h] = cols[i]; });
       return obj;
-    });
+    }).filter(r => Object.values(r).some(v => v !== undefined && v !== ''));
 
+    if(!rows.length){
+      // Nothing parsed — include the raw CSV so we can see exactly what Stooq sent back.
+      return res.status(200).json({ data: [], debug_raw_csv: csvText.slice(0, 500) });
+    }
     return res.status(200).json({ data: rows });
   } catch (err) {
     return res.status(500).json({ error: String(err) });
