@@ -20,8 +20,24 @@ export default async function handler(req, res) {
     // Stooq's endpoint doesn't split on, silently returning zero rows.
     const symbolList = symbols.split(',').map(s => encodeURIComponent(s.trim())).join(',');
     const url = `https://stooq.com/q/l/?s=${symbolList}&f=sd2t2ohlcv&h&e=csv`;
-    const resp = await fetch(url);
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/csv,text/plain,*/*',
+        'Accept-Language': 'en-US,en;q=0.9'
+      }
+    });
     const csvText = await resp.text();
+
+    if(csvText.trim().startsWith('<')){
+      // Stooq returned an HTML page (bot-block / cookie-consent / error page) instead
+      // of CSV data — a known intermittent issue with this unofficial endpoint.
+      return res.status(200).json({
+        data: [],
+        error_detail: 'Stooq ne CSV ki jagah HTML page bheja (bot-block ya consent page) — dobara try karein, ya symbols check karein.',
+        debug_raw_html: csvText.slice(0, 300)
+      });
+    }
 
     const lines = csvText.trim().split('\n');
     const header = lines[0].split(',').map(h => h.trim().replace(/"/g,''));
