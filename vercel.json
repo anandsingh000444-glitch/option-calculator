@@ -7,6 +7,7 @@
     { "src": "api/market-news.js", "use": "@vercel/node" },
     { "src": "api/worldmonitor.js", "use": "@vercel/node" },
     { "src": "api/stooq-quotes.js", "use": "@vercel/node" },
+    { "src": "api/gdelt.js", "use": "@vercel/node" },
     { "src": "index.html", "use": "@vercel/static" }
   ],
   "routes": [
@@ -16,6 +17,7 @@
     { "src": "/api/market-news",  "dest": "/api/market-news.js"  },
     { "src": "/api/worldmonitor", "dest": "/api/worldmonitor.js" },
     { "src": "/api/stooq-quotes", "dest": "/api/stooq-quotes.js" },
+    { "src": "/api/gdelt",        "dest": "/api/gdelt.js" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }

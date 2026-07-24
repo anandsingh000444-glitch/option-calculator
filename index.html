@@ -1046,22 +1046,17 @@ async function fetchGeoRisk(){
   const btn = document.getElementById('geoRiskBtn');
   const status = document.getElementById('geoRiskStatus');
   const resultDiv = document.getElementById('geoRiskResult');
+  const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
 
   btn.disabled = true; btn.textContent = '⤓ Fetching...';
   status.textContent = 'GDELT se India-related news ka overall tone (sentiment) la raha hoon...';
   status.style.color = 'var(--dim)';
 
   try{
-    // GDELT DOC 2.0 API explicitly supports CORS for embedding, so this is called
-    // directly from the browser — no server-side proxy needed. We use the
-    // "timelinetone" mode: average sentiment/tone of worldwide news mentioning
-    // "India" over the last few days. More negative tone ≈ more negative/tense
-    // coverage (conflict, crisis, market stress) — used here as a rough proxy for
-    // geopolitical/news-driven risk, not an official instability index.
-    const url = `https://api.gdeltproject.org/api/v2/doc/doc?query=India&mode=timelinetone&format=json&timespan=3day`;
+    const url = `${proxyBase}/api/gdelt?query=India&mode=timelinetone&timespan=3day`;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     const json = await resp.json();
-    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
 
     const series = json.timeline?.[0]?.data;
     if(Array.isArray(series) && series.length){
