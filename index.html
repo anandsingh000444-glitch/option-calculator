@@ -166,13 +166,38 @@
     <div class="card">
       <h2>Market Inputs</h2>
 
-      <label>Index</label>
-      <select id="indexName">
-        <option value="NIFTY 50">NIFTY 50</option>
-        <option value="BANK NIFTY">BANK NIFTY</option>
-        <option value="SENSEX">SENSEX</option>
-        <option value="FIN NIFTY">FIN NIFTY</option>
+      <label>Instrument Type</label>
+      <select id="instrumentType" onchange="toggleInstrumentType()">
+        <option value="index">Index (NIFTY/BANKNIFTY/etc)</option>
+        <option value="stock">Individual Stock (Reliance/TCS/etc)</option>
       </select>
+
+      <div id="indexModeFields">
+        <label>Index</label>
+        <select id="indexName">
+          <option value="NIFTY 50">NIFTY 50</option>
+          <option value="BANK NIFTY">BANK NIFTY</option>
+          <option value="SENSEX">SENSEX</option>
+          <option value="FIN NIFTY">FIN NIFTY</option>
+        </select>
+      </div>
+
+      <div id="stockModeFields" style="display:none;">
+        <label>Stock Symbol (sirf label ke liye)</label>
+        <input type="text" id="stockSymbol" placeholder="e.g. RELIANCE">
+
+        <label>Upstox Instrument Key <span class="badge">manually daalo</span></label>
+        <input type="text" id="stockInstrumentKey" placeholder="e.g. NSE_FO|12345">
+        <div style="font-size:10px;color:var(--dim);margin-top:4px;">
+          Stocks ki instrument key index jaisi simple nahi hoti — Upstox ki
+          <a href="https://upstox.com/developer/api-documentation/instruments/" target="_blank" style="color:var(--amber);">instrument master file</a>
+          se apne stock ka sahi key dhoondh kar yahan paste karo. Galat key daalne se live data nahi milega.
+        </div>
+
+        <label>Dividend Yield % <span class="badge">stock ke liye zaroori</span></label>
+        <input type="number" id="dividendYield" value="0" step="0.01">
+        <div style="font-size:10px;color:var(--dim);margin-top:4px;">Index options mein usually ignore kar sakte ho (0 rakho), lekin stocks jo dividend dete hain unke liye ye premium ko meaningfully affect karta hai — company ki annual dividend yield daalo.</div>
+      </div>
 
       <label>Proxy Server URL <span class="badge">for live data</span></label>
       <input type="text" id="proxyBase" value="https://option-calculator-rose.vercel.app" placeholder="https://your-vercel-app.vercel.app">
@@ -349,6 +374,7 @@
         </div>
 
         <div id="signalSummary" class="section-gap" style="padding:12px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);"></div>
+        <div id="liveDataWarning" style="margin-top:8px;"></div>
 
         <div class="table-wrap section-gap">
           <table id="tradePlanTable">
@@ -522,38 +548,47 @@ function N(x){ return 0.5*(1+erf(x/Math.SQRT2)); }
 function phi(x){ return Math.exp(-x*x/2)/Math.sqrt(2*Math.PI); }
 
 // returns full greek set for one option
-function bs(S,K,Tdays,sigmaPct,rPct,type){
+function bs(S,K,Tdays,sigmaPct,rPct,type,qPct){
   const T = Math.max(Tdays,0.0001)/365;
   const sigma = Math.max(sigmaPct,0.01)/100;
   const r = rPct/100;
+  const q = (qPct||0)/100; // continuous dividend yield — 0 for index options, set for dividend-paying stocks
   const sqrtT = Math.sqrt(T);
 
-  const d1 = (Math.log(S/K) + (r + sigma*sigma/2)*T) / (sigma*sqrtT);
+  // Merton (1973) dividend-adjusted Black-Scholes: drift uses (r - q) instead of r,
+  // and the spot term is discounted by e^(-qT) throughout.
+  const d1 = (Math.log(S/K) + (r - q + sigma*sigma/2)*T) / (sigma*sqrtT);
   const d2 = d1 - sigma*sqrtT;
   const Nd1=N(d1), Nd2=N(d2), Nnd1=N(-d1), Nnd2=N(-d2), pd1=phi(d1);
-  const disc = Math.exp(-r*T);
+  const discR = Math.exp(-r*T);
+  const discQ = Math.exp(-q*T);
 
   let price, delta, theta, rho;
   if(type==='CE'){
-    price = S*Nd1 - K*disc*Nd2;
-    delta = Nd1;
-    theta = (-(S*pd1*sigma)/(2*sqrtT) - r*K*disc*Nd2)/365;
-    rho = (K*T*disc*Nd2)/100;
+    price = S*discQ*Nd1 - K*discR*Nd2;
+    delta = discQ*Nd1;
+    theta = (-(S*discQ*pd1*sigma)/(2*sqrtT) - r*K*discR*Nd2 + q*S*discQ*Nd1)/365;
+    rho = (K*T*discR*Nd2)/100;
   } else {
-    price = K*disc*Nnd2 - S*Nnd1;
-    delta = Nd1-1;
-    theta = (-(S*pd1*sigma)/(2*sqrtT) + r*K*disc*Nnd2)/365;
-    rho = (-K*T*disc*Nnd2)/100;
+    price = K*discR*Nnd2 - S*discQ*Nnd1;
+    delta = discQ*(Nd1-1);
+    theta = (-(S*discQ*pd1*sigma)/(2*sqrtT) + r*K*discR*Nnd2 - q*S*discQ*Nnd1)/365;
+    rho = (-K*T*discR*Nnd2)/100;
   }
 
-  const gamma = pd1/(S*sigma*sqrtT);
-  const vega = (S*pd1*sqrtT)/100;
-  const vanna = -pd1*d2/sigma;
+  // Higher-order Greeks below use the dividend-adjusted d1/d2 (so they're directionally
+  // correct), but keep their original no-dividend closed forms — for qPct=0 (all index
+  // options, and the default for stocks too) they're exact; for dividend-paying stocks
+  // with a nonzero yield they're a reasonable approximation rather than the full
+  // multi-term dividend-adjusted derivation.
+  const gamma = discQ*pd1/(S*sigma*sqrtT);
+  const vega = (S*discQ*pd1*sqrtT)/100;
+  const vanna = -discQ*pd1*d2/sigma;
   const vomma = vega*d1*d2/sigma;
-  const charm = (-pd1*(2*r*T - d2*sigma*sqrtT)/(2*T*sigma*sqrtT))/365;
+  const charm = (-discQ*pd1*(2*(r-q)*T - d2*sigma*sqrtT)/(2*T*sigma*sqrtT))/365;
   const speed = (-gamma/S)*(d1/(sigma*sqrtT)+1);
   const zomma = gamma*(d1*d2-1)/sigma;
-  const color = (-pd1/(2*S*T*sigma*sqrtT))*(1 + (2*r*T - d2*sigma*sqrtT)/(sigma*sqrtT)*d1)/365;
+  const color = (-discQ*pd1/(2*S*T*sigma*sqrtT))*(1 + (2*(r-q)*T - d2*sigma*sqrtT)/(sigma*sqrtT)*d1)/365;
   const lambda = price>0.05 ? (delta*S/price) : 0;
 
   return {price, delta, gamma, theta, vega, rho, vanna, vomma, charm, speed, zomma, color, lambda};
@@ -577,8 +612,17 @@ async function fetchUpstoxChain(){
   const status = document.getElementById('upstoxStatus');
   const token = document.getElementById('upstoxToken').value.trim();
   const expiry = document.getElementById('upstoxExpiry').value.trim();
-  const idxName = document.getElementById('indexName').value;
-  const instrumentKey = INSTRUMENT_KEYS[idxName];
+  const isStockMode = document.getElementById('instrumentType').value === 'stock';
+
+  let idxName, instrumentKey;
+  if(isStockMode){
+    idxName = document.getElementById('stockSymbol').value.trim() || 'Stock';
+    instrumentKey = document.getElementById('stockInstrumentKey').value.trim();
+    if(!instrumentKey){ status.textContent='✗ Stock ki Upstox Instrument Key daalein (instrument master file se).'; status.style.color='var(--pe)'; return; }
+  } else {
+    idxName = document.getElementById('indexName').value;
+    instrumentKey = INSTRUMENT_KEYS[idxName];
+  }
 
   if(!token){ status.textContent='✗ Pehle apna Upstox access_token daalein.'; status.style.color='var(--pe)'; return; }
   if(!expiry){ status.textContent='✗ Expiry date daalein (YYYY-MM-DD).'; status.style.color='var(--pe)'; return; }
@@ -661,7 +705,6 @@ async function fetchUpstoxChain(){
 // ==================================================================================
 
 let activePrediction = null;
-let lastCheckedSpotForPredictions = null;
 
 function loadActivePrediction(){
   try{ return JSON.parse(localStorage.getItem('optcalc_active_prediction') || 'null'); }
@@ -735,49 +778,59 @@ function updatePredictions(tradeK, levelDefs){
 // Checks whether the live spot has reached (or crossed) any pending level's target,
 // and if so, captures the real live premium at that moment for comparison.
 function checkPredictionResolutions(currentSpot, tradeK){
-  if(!activePrediction || activePrediction.strike !== tradeK){
-    lastCheckedSpotForPredictions = currentSpot;
-    return;
-  }
+  if(!activePrediction || activePrediction.strike !== tradeK) return;
+
   const step = parseFloat(document.getElementById('stepSize').value) || 50;
   const tolerance = Math.max(5, step/4);
   const tLiveNow = liveChain ? liveChain[tradeK] : null;
   const ceLtpNow = (tLiveNow && tLiveNow.ceLtp!=null) ? tLiveNow.ceLtp : null;
   const peLtpNow = (tLiveNow && tLiveNow.peLtp!=null) ? tLiveNow.peLtp : null;
 
+  const entryLvl = activePrediction.levels['Entry'];
+  const entryTarget = entryLvl ? entryLvl.target : currentSpot;
+
+  function resolveLevel(key, lvl){
+    lvl.resolved = true;
+    lvl.actualCe = ceLtpNow;
+    lvl.actualPe = peLtpNow;
+    lvl.resolvedAt = Date.now();
+    lvl.errCe = lvl.actualCe - lvl.predictedCe;
+    lvl.errPe = lvl.actualPe - lvl.predictedPe;
+    updateCalibration('CE_' + moneynessBucket(lvl.target, tradeK, 'CE'), lvl.errCe);
+    updateCalibration('PE_' + moneynessBucket(lvl.target, tradeK, 'PE'), lvl.errPe);
+    const history = loadPredictionHistory();
+    history.push({
+      key, strike: tradeK, target: lvl.target,
+      predictedCe: lvl.predictedCe, actualCe: lvl.actualCe, errCe: lvl.errCe,
+      predictedPe: lvl.predictedPe, actualPe: lvl.actualPe, errPe: lvl.errPe,
+      resolvedAt: lvl.resolvedAt
+    });
+    savePredictionHistory(history);
+  }
+
   Object.keys(activePrediction.levels).forEach(key=>{
     const lvl = activePrediction.levels[key];
-    if(lvl.resolved) return;
-    const target = lvl.target;
-    let hit = Math.abs(currentSpot - target) <= tolerance;
-    if(!hit && lastCheckedSpotForPredictions != null){
-      const prevSide = lastCheckedSpotForPredictions - target;
-      const currSide = currentSpot - target;
-      if(prevSide !== 0 && currSide !== 0 && (prevSide < 0) !== (currSide < 0)) hit = true; // crossed through it
-    }
-    if(hit && ceLtpNow != null && peLtpNow != null){
-      lvl.resolved = true;
-      lvl.actualCe = ceLtpNow;
-      lvl.actualPe = peLtpNow;
-      lvl.resolvedAt = Date.now();
-      lvl.errCe = lvl.actualCe - lvl.predictedCe;
-      lvl.errPe = lvl.actualPe - lvl.predictedPe;
+    if(lvl.resolved || ceLtpNow==null || peLtpNow==null) return;
 
-      updateCalibration('CE_' + moneynessBucket(target, tradeK, 'CE'), lvl.errCe);
-      updateCalibration('PE_' + moneynessBucket(target, tradeK, 'PE'), lvl.errPe);
-
-      const history = loadPredictionHistory();
-      history.push({
-        key, strike: tradeK, target,
-        predictedCe: lvl.predictedCe, actualCe: lvl.actualCe, errCe: lvl.errCe,
-        predictedPe: lvl.predictedPe, actualPe: lvl.actualPe, errPe: lvl.errPe,
-        resolvedAt: lvl.resolvedAt
-      });
-      savePredictionHistory(history);
+    let hit;
+    if(key === 'Entry'){
+      // Entry just needs the spot to have reached/be-near it, direction-agnostic.
+      hit = Math.abs(currentSpot - lvl.target) <= tolerance;
+    } else {
+      // SL/TP: "hit" if spot has reached or moved past this level in the direction
+      // AWAY from Entry (i.e. Entry -> target direction) — this works correctly even
+      // right after a page reload or a big gap between checks, unlike a tick-to-tick
+      // crossing check which needs continuous history to detect a crossing.
+      const direction = lvl.target - entryTarget; // >0: level is above entry, <0: below
+      if(direction >= 0){
+        hit = currentSpot >= (lvl.target - tolerance);
+      } else {
+        hit = currentSpot <= (lvl.target + tolerance);
+      }
     }
+    if(hit) resolveLevel(key, lvl);
   });
   saveActivePrediction();
-  lastCheckedSpotForPredictions = currentSpot;
 }
 
 function renderLearningTracker(){
@@ -887,6 +940,13 @@ function autoCalcDte(){
   const msRemaining = expiryMoment - now;
   const daysRemaining = Math.max(0.001, msRemaining / (1000*60*60*24));
   document.getElementById('dte').value = daysRemaining.toFixed(3);
+  render();
+}
+
+function toggleInstrumentType(){
+  const isStock = document.getElementById('instrumentType').value === 'stock';
+  document.getElementById('indexModeFields').style.display = isStock ? 'none' : 'block';
+  document.getElementById('stockModeFields').style.display = isStock ? 'block' : 'none';
   render();
 }
 
@@ -1238,6 +1298,8 @@ function render(){
   const rate = parseFloat(document.getElementById('rate').value)||0;
   const move = parseFloat(document.getElementById('moveVal').value)||0;
   const numStrikes = Math.max(1, parseInt(document.getElementById('numStrikes').value)||5);
+  const isStockMode = document.getElementById('instrumentType').value === 'stock';
+  const divYield = isStockMode ? (parseFloat(document.getElementById('dividendYield').value)||0) : 0;
   const newSpot = spot + move;
 
   document.getElementById('spotTicker').textContent =
@@ -1259,10 +1321,10 @@ function render(){
   const focusPeIv = (focusLive && focusLive.peIv) || (focusAngel && focusAngel.PE && focusAngel.PE.iv) || iv;
 
   // Premium banner
-  const ceNow = bs(spot, focusK, dte, focusCeIv, rate, 'CE');
-  const ceAfter = bs(newSpot, focusK, dte, focusCeIv, rate, 'CE');
-  const peNow = bs(spot, focusK, dte, focusPeIv, rate, 'PE');
-  const peAfter = bs(newSpot, focusK, dte, focusPeIv, rate, 'PE');
+  const ceNow = bs(spot, focusK, dte, focusCeIv, rate, 'CE', divYield);
+  const ceAfter = bs(newSpot, focusK, dte, focusCeIv, rate, 'CE', divYield);
+  const peNow = bs(spot, focusK, dte, focusPeIv, rate, 'PE', divYield);
+  const peAfter = bs(newSpot, focusK, dte, focusPeIv, rate, 'PE', divYield);
 
   document.getElementById('ceNow').textContent = (focusLive && focusLive.ceLtp!=null) ? fmt(focusLive.ceLtp) : fmt(ceNow.price);
   document.getElementById('ceAfter').textContent = fmt(ceAfter.price);
@@ -1306,6 +1368,17 @@ function render(){
   const tCeIv = (tLive && tLive.ceIv) || (tAngel && tAngel.CE && tAngel.CE.iv) || iv;
   const tPeIv = (tLive && tLive.peIv) || (tAngel && tAngel.PE && tAngel.PE.iv) || iv;
 
+  const liveWarnEl = document.getElementById('liveDataWarning');
+  if(liveWarnEl){
+    if(!liveChain){
+      liveWarnEl.innerHTML = `<div style="font-size:11px;color:var(--amber);">⚠ Abhi live chain pull nahi hui — "Pull Live Chain (Upstox)" dabao, warna koi level kabhi "HIT" nahi hoga (sirf theoretical prediction dikhegi).</div>`;
+    } else if(!tLive || tLive.ceLtp==null || tLive.peLtp==null){
+      liveWarnEl.innerHTML = `<div style="font-size:11px;color:var(--amber);">⚠ Strike ${tradeK} is waqt fetched live chain mein nahi hai — "Strikes each side" badhao ya "Show ALL strikes" dabao, warna is strike ka HIT kabhi detect nahi hoga.</div>`;
+    } else {
+      liveWarnEl.innerHTML = '';
+    }
+  }
+
   // Anchor to the real live LTP (at today's actual spot) when available, and only use
   // the Black-Scholes model to work out the *change* in premium for each hypothetical
   // level — not the absolute premium itself. Pure model prices can be meaningfully off
@@ -1315,8 +1388,8 @@ function render(){
   // "what if" levels. This mirrors the same fix already used in the All Strikes table.
   const ceLiveAnchor = (tLive && tLive.ceLtp!=null) ? tLive.ceLtp : null;
   const peLiveAnchor = (tLive && tLive.peLtp!=null) ? tLive.peLtp : null;
-  const ceModelAtSpot = bs(spot, tradeK, dte, tCeIv, rate, 'CE').price;
-  const peModelAtSpot = bs(spot, tradeK, dte, tPeIv, rate, 'PE').price;
+  const ceModelAtSpot = bs(spot, tradeK, dte, tCeIv, rate, 'CE', divYield).price;
+  const peModelAtSpot = bs(spot, tradeK, dte, tPeIv, rate, 'PE', divYield).price;
 
   // Self-learning calibration: a running, per-moneyness-bucket average of how far off
   // our past predictions were from what the market actually showed once it reached
@@ -1327,11 +1400,11 @@ function render(){
   function anchoredPrice(levelVal, type){
     let rawPrice;
     if(type==='CE'){
-      const modelAtLevel = bs(levelVal, tradeK, dte, tCeIv, rate, 'CE').price;
+      const modelAtLevel = bs(levelVal, tradeK, dte, tCeIv, rate, 'CE', divYield).price;
       const delta = modelAtLevel - ceModelAtSpot;
       rawPrice = ceLiveAnchor!=null ? Math.max(0, ceLiveAnchor + delta) : modelAtLevel;
     } else {
-      const modelAtLevel = bs(levelVal, tradeK, dte, tPeIv, rate, 'PE').price;
+      const modelAtLevel = bs(levelVal, tradeK, dte, tPeIv, rate, 'PE', divYield).price;
       const delta = modelAtLevel - peModelAtSpot;
       rawPrice = peLiveAnchor!=null ? Math.max(0, peLiveAnchor + delta) : modelAtLevel;
     }
@@ -1578,16 +1651,16 @@ function render(){
     // valuation bases (real market vs model). The Δ must always come from the same model.
     const ceNIv = (live && live.ceIv) || (angelK && angelK.CE && angelK.CE.iv) || iv;
     const peNIv = (live && live.peIv) || (angelK && angelK.PE && angelK.PE.iv) || iv;
-    const ceBsNow = bs(spot, K, dte, ceNIv, rate, 'CE');
-    const peBsNow = bs(spot, K, dte, peNIv, rate, 'PE');
+    const ceBsNow = bs(spot, K, dte, ceNIv, rate, 'CE', divYield);
+    const peBsNow = bs(spot, K, dte, peNIv, rate, 'PE', divYield);
     const ceLiveLtp = (live && live.ceLtp!=null) ? live.ceLtp : null;
     const peLiveLtp = (live && live.peLtp!=null) ? live.peLtp : null;
     const ceNowPrice = ceLiveLtp!=null ? ceLiveLtp : ceBsNow.price;
     const peNowPrice = peLiveLtp!=null ? peLiveLtp : peBsNow.price;
 
     // "after move" values: always simulated via BS using strike's own IV (live if we have it)
-    const ceA = bs(newSpot, K, dte, ceNIv, rate, 'CE');
-    const peA = bs(newSpot, K, dte, peNIv, rate, 'PE');
+    const ceA = bs(newSpot, K, dte, ceNIv, rate, 'CE', divYield);
+    const peA = bs(newSpot, K, dte, peNIv, rate, 'PE', divYield);
 
     // Δ = theoretical after − theoretical now (both same model), so direction is always correct.
     // If a live LTP exists, scale the theoretical Δ onto it so the displayed "after" number
@@ -1613,7 +1686,7 @@ function render(){
 }
 
 // wire inputs
-['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize'].forEach(id=>{
+['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize','dividendYield','stockSymbol','stockInstrumentKey'].forEach(id=>{
   document.getElementById(id).addEventListener('input', render);
 });
 document.getElementById('focusStrike').addEventListener('change', render);
