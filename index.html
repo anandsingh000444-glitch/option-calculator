@@ -183,15 +183,21 @@
       </div>
 
       <div id="stockModeFields" style="display:none;">
-        <label>Stock Symbol (sirf label ke liye)</label>
+        <label>Stock Symbol</label>
         <input type="text" id="stockSymbol" placeholder="e.g. RELIANCE">
 
-        <label>Upstox Instrument Key <span class="badge">manually daalo</span></label>
+        <button type="button" id="findInstrumentKeyBtn" onclick="findInstrumentKey()" style="width:100%;margin-top:8px;padding:8px 0;background:#12332A;border:1px solid #22C583;color:#22C583;border-radius:5px;font-family:var(--mono);font-size:11.5px;cursor:pointer;">
+          🔍 Find Instrument Key
+        </button>
+        <div id="instrumentLookupStatus" style="font-size:11px;color:var(--dim);margin-top:6px;"></div>
+        <div id="instrumentLookupResults" style="max-height:220px;overflow-y:auto;margin-top:6px;"></div>
+
+        <label class="section-gap">Upstox Instrument Key <span class="badge">ya manually daalo</span></label>
         <input type="text" id="stockInstrumentKey" placeholder="e.g. NSE_FO|12345">
         <div style="font-size:10px;color:var(--dim);margin-top:4px;">
-          Stocks ki instrument key index jaisi simple nahi hoti — Upstox ki
+          Upar search karo aur list se select karo, ya khud
           <a href="https://upstox.com/developer/api-documentation/instruments/" target="_blank" style="color:var(--amber);">instrument master file</a>
-          se apne stock ka sahi key dhoondh kar yahan paste karo. Galat key daalne se live data nahi milega.
+          se manually dhoondh kar yahan paste karo.
         </div>
 
         <label>Dividend Yield % <span class="badge">stock ke liye zaroori</span></label>
@@ -940,6 +946,61 @@ function autoCalcDte(){
   const msRemaining = expiryMoment - now;
   const daysRemaining = Math.max(0.001, msRemaining / (1000*60*60*24));
   document.getElementById('dte').value = daysRemaining.toFixed(3);
+  render();
+}
+
+async function findInstrumentKey(){
+  const btn = document.getElementById('findInstrumentKeyBtn');
+  const status = document.getElementById('instrumentLookupStatus');
+  const resultsDiv = document.getElementById('instrumentLookupResults');
+  const symbol = document.getElementById('stockSymbol').value.trim();
+  const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
+
+  if(!symbol){ status.textContent = '✗ Pehle Stock Symbol daalein (jaise RELIANCE).'; status.style.color = 'var(--pe)'; return; }
+
+  if(btn){ btn.disabled = true; btn.textContent = '🔍 Searching...'; }
+  status.textContent = 'Upstox ki instrument file download + search ho rahi hai — pehli baar thoda time lag sakta hai (file badi hai)...';
+  status.style.color = 'var(--dim)';
+  resultsDiv.innerHTML = '';
+
+  try{
+    const url = `${proxyBase}/api/upstox-instrument-lookup?symbol=${encodeURIComponent(symbol)}`;
+    const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const json = await resp.json();
+    if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+    const items = json.data || [];
+    if(!items.length){
+      status.textContent = `⚠ '${symbol}' ke liye koi F&O contract nahi mila — naam sahi likha hai check karo.`;
+      status.style.color = 'var(--amber)';
+      return;
+    }
+
+    status.textContent = `✓ ${json.count} contracts mile${json.total_matched_before_limit > json.count ? ` (${json.total_matched_before_limit} total, top ${json.count} dikha rahe hain — expiry/strike se search narrow karo)` : ''}`;
+    status.style.color = 'var(--ce)';
+
+    resultsDiv.innerHTML = items.map(it => `
+      <div onclick="selectInstrumentKey('${it.instrument_key}','${it.trading_symbol}')" style="padding:6px 8px;border:1px solid var(--line);border-radius:4px;margin-bottom:4px;cursor:pointer;font-size:11px;font-family:var(--mono);" onmouseover="this.style.background='var(--panel2)'" onmouseout="this.style.background='transparent'">
+        <div style="color:var(--text);">${it.trading_symbol}</div>
+        <div style="color:var(--dim);font-size:10px;">${it.instrument_key} · Strike ${it.strike_price} · ${it.instrument_type} · Exp ${it.expiry}</div>
+      </div>
+    `).join('');
+  } catch(err){
+    console.error('Instrument lookup error:', err);
+    let msg = err.message || String(err);
+    if(msg.includes('Failed to fetch')) msg = 'Proxy tak connection nahi bana — proxy URL check karein.';
+    status.textContent = '✗ ' + msg + ' (Agar timeout hai to file bahut badi ho sakti hai — dobara try karein.)';
+    status.style.color = 'var(--pe)';
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = '🔍 Find Instrument Key'; }
+  }
+}
+
+function selectInstrumentKey(key, tradingSymbol){
+  document.getElementById('stockInstrumentKey').value = key;
+  document.getElementById('instrumentLookupStatus').innerHTML = `✓ Selected: <b>${tradingSymbol}</b>`;
+  document.getElementById('instrumentLookupStatus').style.color = 'var(--ce)';
+  document.getElementById('instrumentLookupResults').innerHTML = '';
   render();
 }
 
