@@ -356,6 +356,16 @@
       </div>
 
       <div class="card section-gap">
+        <h2>Expected Premium Move (EPM) <span class="badge">Quick estimate vs Full reprice</span></h2>
+        <div class="foot-note" style="margin-bottom:12px;">
+          "Agar index itna move kare, to premium kitna badlega" — ek quick Delta-based andaza deta hai (jo dimaag mein turant calculate kiya ja sakta hai), aur usse poore Black-Scholes reprice se compare karta hai taaki pata chale Delta-only estimate kitna accurate hai.
+        </div>
+        <label>Move index by (points)</label>
+        <input type="number" id="epmMove" value="50" step="10">
+        <div id="epmResult" class="section-gap"></div>
+      </div>
+
+      <div class="card section-gap">
         <h2>Trade Plan Premium Table <span class="badge">Entry · SL · TP1-3</span></h2>
         <div class="foot-note" style="margin-bottom:12px;">
           Apne chart/signal ke Entry, SL, aur Targets ke index levels yahan daalo (jaise kisi indicator se aaye) — jo bhi strike choose karo (ITM/ATM/OTM/kuch bhi), har level pe CE aur PE ka premium dikh jayega.
@@ -1631,6 +1641,45 @@ function render(){
     </div>
   `).join('');
 
+  // ---- Expected Premium Move (EPM): Delta-only vs Delta+Gamma vs Full Reprice ----
+  const epmMove = parseFloat(document.getElementById('epmMove').value) || 0;
+  const epmNewSpot = spot + epmMove;
+
+  function epmCompare(nowObj, type, ivUsed){
+    const deltaOnly = nowObj.delta * epmMove;
+    const deltaGamma = nowObj.delta * epmMove + 0.5 * nowObj.gamma * epmMove * epmMove;
+    const fullReprice = bs(epmNewSpot, focusK, dte, ivUsed, rate, type, divYield).price - nowObj.price;
+    return { deltaOnly, deltaGamma, fullReprice };
+  }
+  const ceEpm = epmCompare(ceNow, 'CE', focusCeIv);
+  const peEpm = epmCompare(peNow, 'PE', focusPeIv);
+
+  const epmDiv = document.getElementById('epmResult');
+  function epmRow(label, val, isBaseline){
+    return `<div class="g-cell${isBaseline?' hi':''}">
+      <div class="label">${label}</div>
+      <div class="val" style="font-size:15px;">${val>=0?'+':''}${fmt(val)}</div>
+    </div>`;
+  }
+  epmDiv.innerHTML = `
+    <div style="font-size:11px;color:var(--dim);margin-bottom:6px;">Strike ${focusK} · Move ${epmMove>=0?'+':''}${fmt(epmMove,0)} (${fmt(spot,0)} → ${fmt(epmNewSpot,0)})</div>
+    <div style="font-family:var(--mono);font-size:11px;color:var(--ce);margin-bottom:4px;">CE</div>
+    <div class="greeks-grid" style="grid-template-columns:repeat(3,1fr);">
+      ${epmRow('Delta-only estimate', ceEpm.deltaOnly)}
+      ${epmRow('Delta+Gamma estimate', ceEpm.deltaGamma)}
+      ${epmRow('Full reprice (exact)', ceEpm.fullReprice, true)}
+    </div>
+    <div class="foot-note" style="margin-top:4px;">Delta-only error: ${fmt(ceEpm.deltaOnly-ceEpm.fullReprice)} · Delta+Gamma error: ${fmt(ceEpm.deltaGamma-ceEpm.fullReprice)}</div>
+
+    <div style="font-family:var(--mono);font-size:11px;color:var(--pe);margin:10px 0 4px;">PE</div>
+    <div class="greeks-grid" style="grid-template-columns:repeat(3,1fr);">
+      ${epmRow('Delta-only estimate', peEpm.deltaOnly)}
+      ${epmRow('Delta+Gamma estimate', peEpm.deltaGamma)}
+      ${epmRow('Full reprice (exact)', peEpm.fullReprice, true)}
+    </div>
+    <div class="foot-note" style="margin-top:4px;">Delta-only error: ${fmt(peEpm.deltaOnly-peEpm.fullReprice)} · Delta+Gamma error: ${fmt(peEpm.deltaGamma-peEpm.fullReprice)}</div>
+  `;
+
   // ---- Trade Plan Premium Table (Entry / SL / TP1 / TP2 / TP3) ----
   populateFocusStrikes('tradeStrike', spot, step, numStrikes); // reuse strike list builder
   const tradeK = parseFloat(document.getElementById('tradeStrike').value) || nearestStep(spot, step);
@@ -1993,7 +2042,7 @@ function render(){
 }
 
 // wire inputs
-['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize','dividendYield','stockSymbol','stockInstrumentKey'].forEach(id=>{
+['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize','dividendYield','stockSymbol','stockInstrumentKey','epmMove'].forEach(id=>{
   document.getElementById(id).addEventListener('input', render);
 });
 document.getElementById('focusStrike').addEventListener('change', render);
