@@ -440,6 +440,18 @@
       </div>
 
       <div class="card section-gap">
+        <h2>Payoff Diagram <span class="badge">Expiry P&amp;L</span></h2>
+        <div class="foot-note" style="margin-bottom:10px;">
+          Agar Entry premium par CE/PE khareed ke expiry tak hold karo, to alag-alag expiry-spot levels par profit/loss kaisa dikhega — X-axis: NIFTY expiry par kahan band hoga, Y-axis: ₹ profit/loss (lot size ke saath).
+        </div>
+        <div id="payoffChart"></div>
+        <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;">
+          <span style="color:var(--ce);">━ CE (Buy Call)</span>
+          <span style="color:var(--pe);">━ PE (Buy Put)</span>
+        </div>
+      </div>
+
+      <div class="card section-gap">
         <h2>Self-Learning Accuracy Tracker <span class="badge">Statistical calibration, not AI</span></h2>
         <div class="foot-note" style="margin-bottom:12px;">
           Jab bhi market Entry/SL/TP1/TP2/TP3 tak actually pahunchta hai, system apni prediction ko real premium se compare karta hai aur farak (error) ko yaad rakhta hai — strike ke moneyness (ITM/ATM/OTM) ke hisaab se. Time ke saath, future predictions mein yehi learned correction automatically apply ho jati hai.
@@ -487,6 +499,21 @@
         <h2 class="section-gap">ARTH — AI Risk Thermometer <span class="badge">Custom composite, official metric nahi</span></h2>
         <div class="foot-note" style="margin-bottom:10px;">VIX + PCR + expiry-nearness (gamma risk) ko milaake ek hi 0-100 risk score — "market abhi kitni jhatke wali/risky state mein hai" iska ek quick heuristic sense.</div>
         <div id="arthGauge"></div>
+      </div>
+
+      <div class="card section-gap">
+        <h2>Max Pain &amp; OI Buildup <span class="badge">Live Upstox chain se</span></h2>
+        <div class="foot-note" style="margin-bottom:10px;">
+          Max Pain woh strike hai jahan expiry par option writers (jo majority volume control karte hain) ka total payout sabse kam hoga — traders ise ek popular (par 100% reliable nahi) support/resistance heuristic ki tarah dekhte hain.
+        </div>
+        <div id="maxPainDisplay"></div>
+        <div id="oiChart" class="section-gap"></div>
+
+        <h2 class="section-gap">IV Rank / Percentile <span class="badge">Apna history, ab se track hoga</span></h2>
+        <div class="foot-note" style="margin-bottom:10px;">
+          "IV Rank" batata hai abhi ka IV, pichle IV readings ke muqable kahan khada hai — 100% ka matlab "abhi tak ka sabse zyada IV", 0% ka matlab "sabse kam". Humare paas koi purana historical database nahi hai, isliye system <b>ab se</b> har live-fetch par IV record karega — jitna zyada use karoge, utna accurate ho jayega.
+        </div>
+        <div id="ivRankDisplay"></div>
       </div>
 
       <div class="card section-gap">
@@ -605,6 +632,24 @@ function bs(S,K,Tdays,sigmaPct,rPct,type,qPct){
 let liveChain = null;
 let liveSpot = null;
 let livePCR = null;
+let liveMaxPain = null;
+
+function computeMaxPain(chain){
+  const strikes = Object.keys(chain).map(Number);
+  if(!strikes.length) return null;
+  let bestStrike = null, bestPayout = Infinity;
+  strikes.forEach(candidateS=>{
+    let payout = 0;
+    strikes.forEach(K=>{
+      const ceOi = chain[K].ceOi || 0;
+      const peOi = chain[K].peOi || 0;
+      payout += ceOi * Math.max(0, candidateS - K);
+      payout += peOi * Math.max(0, K - candidateS);
+    });
+    if(payout < bestPayout){ bestPayout = payout; bestStrike = candidateS; }
+  });
+  return bestStrike;
+}
 
 const INSTRUMENT_KEYS = {
   'NIFTY 50': 'NSE_INDEX|Nifty 50',
@@ -673,9 +718,18 @@ async function fetchUpstoxChain(){
     liveChain = chain;
     liveSpot = spotVal;
     livePCR = totalCeOi > 0 ? (totalPeOi / totalCeOi) : null;
+    liveMaxPain = computeMaxPain(chain);
     if(spotVal){ document.getElementById('spot').value = Math.round(spotVal); }
 
-    status.innerHTML = `✓ Live chain mila — ${Object.keys(chain).length} strikes. Spot: ${fmt(spotVal,0)}${livePCR ? ' · PCR: ' + fmt(livePCR,2) : ''}. Table ab actual LTP + per-strike IV use kar rahi hai.`;
+    // Snapshot ATM's average CE/PE IV for IV Rank tracking (built up over time, no external DB)
+    const stepForAtm = parseFloat(document.getElementById('stepSize').value) || 50;
+    const atmK = Math.round(spotVal/stepForAtm)*stepForAtm;
+    const atmEntry = chain[atmK];
+    if(atmEntry && atmEntry.ceIv!=null && atmEntry.peIv!=null){
+      snapshotIvHistory((atmEntry.ceIv + atmEntry.peIv)/2);
+    }
+
+    status.innerHTML = `✓ Live chain mila — ${Object.keys(chain).length} strikes. Spot: ${fmt(spotVal,0)}${livePCR ? ' · PCR: ' + fmt(livePCR,2) : ''}${liveMaxPain ? ' · Max Pain: ' + fmt(liveMaxPain,0) : ''}. Table ab actual LTP + per-strike IV use kar rahi hai.`;
     status.style.color = 'var(--ce)';
     if(document.getElementById('upstoxExpiryPicker').value){ autoCalcDte(); } // keep DTE precise across auto-refresh ticks
     render();
@@ -1133,6 +1187,163 @@ function fmt(n, d=2){
 // --- auto-refresh management ---
 let autoTimers = { upstox: null, angel: null };
 
+// ---- OI Buildup Chart: grouped bars of Call OI vs Put OI per strike ----
+// ---- IV Rank/Percentile: track ATM IV history ourselves over time (no external database) ----
+function loadIvHistory(){
+  try{ return JSON.parse(localStorage.getItem('optcalc_iv_history') || '[]'); }
+  catch(e){ return []; }
+}
+function saveIvHistory(arr){
+  try{ localStorage.setItem('optcalc_iv_history', JSON.stringify(arr.slice(-500))); }
+  catch(e){ /* ignore */ }
+}
+function snapshotIvHistory(ivValue){
+  if(ivValue == null || !isFinite(ivValue)) return;
+  const history = loadIvHistory();
+  const last = history[history.length-1];
+  // Avoid flooding history with near-duplicate samples from frequent auto-refresh —
+  // only record a fresh sample at most every 15 minutes.
+  if(last && (Date.now() - last.ts) < 15*60*1000) return;
+  history.push({ iv: ivValue, ts: Date.now() });
+  saveIvHistory(history);
+}
+function computeIvRank(currentIv){
+  const history = loadIvHistory();
+  const MIN_SAMPLES = 20;
+  if(history.length < MIN_SAMPLES) return { rank: null, samples: history.length, needed: MIN_SAMPLES };
+  const lower = history.filter(h => h.iv < currentIv).length;
+  const rank = (lower / history.length) * 100;
+  const ivValues = history.map(h=>h.iv);
+  return { rank, samples: history.length, min: Math.min(...ivValues), max: Math.max(...ivValues) };
+}
+
+function drawOiBuildupChart(spot, step, numStrikes){
+  const container = document.getElementById('oiChart');
+  if(!container) return;
+  if(!liveChain){
+    container.innerHTML = `<div class="foot-note">Live chain pull karo — OI buildup chart yahan dikhega.</div>`;
+    return;
+  }
+
+  const atm = nearestStep(spot, step);
+  const showCount = Math.min(numStrikes, 10); // cap for chart readability
+  const strikes = [];
+  for(let i=-showCount; i<=showCount; i++) strikes.push(atm + i*step);
+
+  const bars = strikes.map(K => ({
+    K,
+    ceOi: (liveChain[K] && liveChain[K].ceOi) || 0,
+    peOi: (liveChain[K] && liveChain[K].peOi) || 0,
+  }));
+  const maxOi = Math.max(1, ...bars.map(b=>Math.max(b.ceOi, b.peOi)));
+
+  const W = 700, H = 220, padL = 50, padR = 10, padT = 10, padB = 46;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const groupW = plotW / bars.length;
+  const barW = Math.max(2, groupW*0.35);
+
+  const barsSvg = bars.map((b, i)=>{
+    const groupX = padL + i*groupW + groupW/2;
+    const ceH = (b.ceOi/maxOi) * plotH;
+    const peH = (b.peOi/maxOi) * plotH;
+    const isAtm = b.K === atm;
+    return `
+      <rect x="${(groupX-barW-1).toFixed(1)}" y="${(padT+plotH-ceH).toFixed(1)}" width="${barW.toFixed(1)}" height="${ceH.toFixed(1)}" fill="#22C583"/>
+      <rect x="${(groupX+1).toFixed(1)}" y="${(padT+plotH-peH).toFixed(1)}" width="${barW.toFixed(1)}" height="${peH.toFixed(1)}" fill="#F0553D"/>
+      <text x="${groupX.toFixed(1)}" y="${H-padB+14}" fill="${isAtm?'#E8A83C':'#7C8894'}" font-size="8.5" text-anchor="middle" font-family="monospace" transform="rotate(45 ${groupX.toFixed(1)} ${H-padB+14})">${fmt(b.K,0)}</text>
+    `;
+  }).join('');
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;">
+      <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H-padB}" stroke="#333" stroke-width="1"/>
+      <line x1="${padL}" y1="${H-padB}" x2="${W-padR}" y2="${H-padB}" stroke="#333" stroke-width="1"/>
+      ${barsSvg}
+      <text x="${padL-6}" y="${padT+8}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">${fmt(maxOi,0)}</text>
+      <text x="${padL-6}" y="${H-padB}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">0</text>
+    </svg>
+    <div style="display:flex;gap:16px;margin-top:6px;font-size:11px;">
+      <span style="color:var(--ce);">■ Call OI</span>
+      <span style="color:var(--pe);">■ Put OI</span>
+    </div>
+  `;
+}
+
+// ---- Payoff Diagram: SVG chart of P&L at expiry across a spot range ----
+function drawPayoffDiagram(strikeK, ceEntryPremium, peEntryPremium, lotSize, step, currentSpot){
+  const container = document.getElementById('payoffChart');
+  if(!container) return;
+
+  const rangeWidth = step * 6; // show 6 strike-steps either side of the strike
+  const minSpot = strikeK - rangeWidth;
+  const maxSpot = strikeK + rangeWidth;
+  const numPoints = 60;
+
+  const points = [];
+  for(let i=0; i<=numPoints; i++){
+    const s = minSpot + (maxSpot-minSpot)*(i/numPoints);
+    const cePnl = (Math.max(0, s - strikeK) - ceEntryPremium) * lotSize;
+    const pePnl = (Math.max(0, strikeK - s) - peEntryPremium) * lotSize;
+    points.push({s, cePnl, pePnl});
+  }
+
+  const allPnl = points.flatMap(p=>[p.cePnl, p.pePnl]);
+  const minPnl = Math.min(...allPnl, 0);
+  const maxPnl = Math.max(...allPnl, 0);
+  const pnlRange = Math.max(1, maxPnl - minPnl);
+
+  const W = 640, H = 260, padL = 60, padR = 20, padT = 16, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  function xPix(s){ return padL + ((s - minSpot)/(maxSpot-minSpot)) * plotW; }
+  function yPix(pnl){ return padT + (1 - (pnl - minPnl)/pnlRange) * plotH; }
+
+  function pathFor(key){
+    return points.map((p,i)=> `${i===0?'M':'L'} ${xPix(p.s).toFixed(1)} ${yPix(p[key]).toFixed(1)}`).join(' ');
+  }
+
+  const zeroY = yPix(0);
+  const spotX = xPix(Math.max(minSpot, Math.min(maxSpot, currentSpot)));
+
+  // Breakeven points: where CE/PE P&L crosses zero
+  function findBreakeven(key){
+    for(let i=1;i<points.length;i++){
+      const a = points[i-1][key], b = points[i][key];
+      if((a<0 && b>=0) || (a>=0 && b<0)){
+        const t = Math.abs(a)/(Math.abs(a)+Math.abs(b));
+        return points[i-1].s + (points[i].s - points[i-1].s)*t;
+      }
+    }
+    return null;
+  }
+  const ceBreakeven = findBreakeven('cePnl');
+  const peBreakeven = findBreakeven('pePnl');
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;">
+      <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H-padB}" stroke="#333" stroke-width="1"/>
+      <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="#555" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="${spotX}" y1="${padT}" x2="${spotX}" y2="${H-padB}" stroke="#E8A83C" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="${spotX}" y="${padT-4}" fill="#E8A83C" font-size="9" text-anchor="middle" font-family="monospace">Spot ${fmt(currentSpot,0)}</text>
+
+      <path d="${pathFor('cePnl')}" fill="none" stroke="#22C583" stroke-width="2"/>
+      <path d="${pathFor('pePnl')}" fill="none" stroke="#F0553D" stroke-width="2"/>
+
+      <text x="${padL-6}" y="${zeroY+3}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">₹0</text>
+      <text x="${padL-6}" y="${padT+8}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">${fmt(maxPnl,0)}</text>
+      <text x="${padL-6}" y="${H-padB}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">${fmt(minPnl,0)}</text>
+
+      <text x="${padL}" y="${H-padB+16}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">${fmt(minSpot,0)}</text>
+      <text x="${xPix(strikeK)}" y="${H-padB+16}" fill="#E8A83C" font-size="9" text-anchor="middle" font-family="monospace">${fmt(strikeK,0)} (Strike)</text>
+      <text x="${W-padR}" y="${H-padB+16}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">${fmt(maxSpot,0)}</text>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--dim);margin-top:4px;">
+      <span>CE breakeven: <b style="color:var(--ce);">${ceBreakeven!=null?fmt(ceBreakeven,0):'—'}</b> · Max loss: ₹${fmt(ceEntryPremium*lotSize,0)}</span>
+      <span>PE breakeven: <b style="color:var(--pe);">${peBreakeven!=null?fmt(peBreakeven,0):'—'}</b> · Max loss: ₹${fmt(peEntryPremium*lotSize,0)}</span>
+    </div>
+  `;
+}
+
 // ---- Semicircular Sentiment Needle Gauge ----
 function drawSentimentNeedle(score, label){
   const cx=100, cy=100, r=80, needleLen=68;
@@ -1540,6 +1751,8 @@ function render(){
 
   // ---- Signal Direction Auto-detect + Risk:Reward + Rupee P&L ----
   const lotSize = Math.max(1, parseInt(document.getElementById('lotSize').value) || 75);
+  drawPayoffDiagram(tradeK, ceEntryPrice, peEntryPrice, lotSize, step, spot);
+
   const slVal  = parseFloat(document.getElementById('lvlSL').value)  || entryLevelVal;
   const tp1Val = parseFloat(document.getElementById('lvlTP1').value) || entryLevelVal;
   const tp2Val = parseFloat(document.getElementById('lvlTP2').value) || entryLevelVal;
@@ -1695,6 +1908,39 @@ function render(){
       </div>
     </div>
   `;
+
+  // ---- Max Pain + OI Buildup Chart ----
+  const maxPainDiv = document.getElementById('maxPainDisplay');
+  if(liveMaxPain != null){
+    const distFromSpot = liveMaxPain - spot;
+    maxPainDiv.innerHTML = `
+      <div class="g-cell hi">
+        <div class="label">Max Pain Strike</div>
+        <div class="val" style="color:var(--amber);">${fmt(liveMaxPain,0)} <span style="font-size:12px;color:var(--dim);">(spot se ${distFromSpot>=0?'+':''}${fmt(distFromSpot,0)})</span></div>
+      </div>`;
+  } else {
+    maxPainDiv.innerHTML = `<div class="foot-note">Live chain pull karo (Upstox) — Max Pain automatically calculate ho jayega.</div>`;
+  }
+  drawOiBuildupChart(spot, step, numStrikes);
+
+  const ivRankDiv = document.getElementById('ivRankDisplay');
+  const currentAtmIv = (tLive && tLive.ceIv!=null && tLive.peIv!=null) ? (tLive.ceIv+tLive.peIv)/2 : null;
+  if(currentAtmIv != null){
+    const ivRankInfo = computeIvRank(currentAtmIv);
+    if(ivRankInfo.rank != null){
+      const rankColor = ivRankInfo.rank > 66 ? 'var(--pe)' : (ivRankInfo.rank > 33 ? 'var(--amber)' : 'var(--ce)');
+      ivRankDiv.innerHTML = `
+        <div class="g-cell hi">
+          <div class="label">IV Rank (${ivRankInfo.samples} samples se)</div>
+          <div class="val" style="color:${rankColor};">${fmt(ivRankInfo.rank,0)}%ile <span style="font-size:12px;color:var(--dim);">(range: ${fmt(ivRankInfo.min,1)}–${fmt(ivRankInfo.max,1)})</span></div>
+        </div>
+        <div class="foot-note" style="margin-top:6px;">${ivRankInfo.rank>66?'IV apne recorded range ke top pe hai — options "mehnge" lag rahe hain (selling premium favorable ho sakta hai).':(ivRankInfo.rank<33?'IV apne recorded range ke bottom pe hai — options "sasta" lag rahe hain (buying premium favorable ho sakta hai).':'IV apne recorded range ke beech mein hai — neutral zone.')}</div>`;
+    } else {
+      ivRankDiv.innerHTML = `<div class="foot-note">History jama ho rahi hai: ${ivRankInfo.samples}/${ivRankInfo.needed} samples. Jab tak 20 samples na ho jayen (kai din ke live-fetch se), IV Rank meaningful nahi hoga.</div>`;
+    }
+  } else {
+    ivRankDiv.innerHTML = `<div class="foot-note">Live chain pull karo — IV history record hona shuru hoga.</div>`;
+  }
 
   // Strike table
   const atm = nearestStep(spot, step);
