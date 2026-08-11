@@ -325,6 +325,12 @@
 
     <!-- OUTPUT PANEL -->
     <div>
+      <div style="display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--line);">
+        <button type="button" id="tabBtnCalculator" onclick="switchTab('calculator')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid var(--amber);color:var(--amber);font-family:var(--mono);font-size:12.5px;cursor:pointer;">📊 Calculator</button>
+        <button type="button" id="tabBtnEpmLab" onclick="switchTab('epmLab')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">🎯 EPM Lab</button>
+      </div>
+
+      <div id="tabPanelCalculator">
       <div class="card">
         <h2>Focus Strike — Premium &amp; All Greeks <span class="badge" id="focusLabel">—</span></h2>
 
@@ -353,16 +359,6 @@
         </div>
 
         <div class="greeks-grid section-gap" id="greeksGrid"></div>
-      </div>
-
-      <div class="card section-gap">
-        <h2>Expected Premium Move (EPM) <span class="badge">Quick estimate vs Full reprice</span></h2>
-        <div class="foot-note" style="margin-bottom:12px;">
-          "Agar index itna move kare, to premium kitna badlega" — ek quick Delta-based andaza deta hai (jo dimaag mein turant calculate kiya ja sakta hai), aur usse poore Black-Scholes reprice se compare karta hai taaki pata chale Delta-only estimate kitna accurate hai.
-        </div>
-        <label>Move index by (points)</label>
-        <input type="number" id="epmMove" value="50" step="10">
-        <div id="epmResult" class="section-gap"></div>
       </div>
 
       <div class="card section-gap">
@@ -572,6 +568,54 @@
         <div class="foot-note">
           Δ (change) actual Black-Scholes repricing se calculate hota hai — sirf Delta approximation nahi, isliye Gamma/Vega ka effect bhi included hai.
           Time decay (Theta) is table mein zero rakha gaya hai (instant move assume kiya gaya hai); agar din bhi guzarna hai to DTE khud adjust karein.
+        </div>
+      </div>
+      </div>
+
+      <div id="tabPanelEpmLab" style="display:none;">
+        <div class="card">
+          <h2>Expected Premium Move (EPM) <span class="badge">Quick estimate vs Full reprice</span></h2>
+          <div class="foot-note" style="margin-bottom:12px;">
+            "Agar index itna move kare, to premium kitna badlega" — ek quick Delta-based andaza deta hai (jo dimaag mein turant calculate kiya ja sakta hai), aur usse poore Black-Scholes reprice se compare karta hai taaki pata chale Delta-only estimate kitna accurate hai. Focus Strike (upar Greeks Panel mein selected) ke liye calculate hota hai.
+          </div>
+          <label>Move index by (points)</label>
+          <input type="number" id="epmMove" value="50" step="10">
+          <div id="epmResult" class="section-gap"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>Overnight Hold Estimate <span class="badge">Delta+Gamma+Theta</span></h2>
+          <div class="foot-note" style="margin-bottom:12px;">
+            Agar aaj position leke kal tak (bina kuch kiye) hold karo, to sirf spot move nahi — Theta (time decay) bhi apna asar dikhayega, chahe spot bilkul na hile. Ye dono ko combine kar ke "net expected move" batata hai.
+          </div>
+          <div id="overnightResult"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>Error vs Move Size <span class="badge">Delta-only vs Delta+Gamma</span></h2>
+          <div class="foot-note" style="margin-bottom:10px;">
+            Chhote moves ke liye Delta-only kaafi accurate hota hai, lekin jaise-jaise move bada hota hai, error badhta jata hai (convexity/Gamma effect) — ye chart wahi dikhata hai.
+          </div>
+          <div id="epmErrorChart"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>All Strikes — EPM Comparison <span class="badge">Fixed move, saari strikes</span></h2>
+          <div class="foot-note" style="margin-bottom:10px;">
+            "Move index by" (upar EPM widget mein) wahi value yahan saari visible strikes ke liye ek saath compare karti hai — dekho konsi strike sabse zyada Gamma-sensitive hai (Delta-only aur Full-reprice ke beech sabse bada farak).
+          </div>
+          <div class="table-wrap">
+            <table id="epmAllStrikesTable">
+              <thead>
+                <tr>
+                  <th style="text-align:left;">Strike</th>
+                  <th>CE Delta-only</th><th>CE Full</th><th>CE Error</th>
+                  <th>PE Delta-only</th><th>PE Full</th><th>PE Error</th>
+                </tr>
+              </thead>
+              <tbody id="epmAllStrikesBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -1068,6 +1112,16 @@ function selectInstrumentKey(key, tradingSymbol){
   render();
 }
 
+function switchTab(tab){
+  const isCalc = tab === 'calculator';
+  document.getElementById('tabPanelCalculator').style.display = isCalc ? 'block' : 'none';
+  document.getElementById('tabPanelEpmLab').style.display = isCalc ? 'none' : 'block';
+  document.getElementById('tabBtnCalculator').style.borderBottomColor = isCalc ? 'var(--amber)' : 'transparent';
+  document.getElementById('tabBtnCalculator').style.color = isCalc ? 'var(--amber)' : 'var(--dim)';
+  document.getElementById('tabBtnEpmLab').style.borderBottomColor = isCalc ? 'transparent' : 'var(--amber)';
+  document.getElementById('tabBtnEpmLab').style.color = isCalc ? 'var(--dim)' : 'var(--amber)';
+}
+
 function toggleInstrumentType(){
   const isStock = document.getElementById('instrumentType').value === 'stock';
   document.getElementById('indexModeFields').style.display = isStock ? 'none' : 'block';
@@ -1225,6 +1279,48 @@ function computeIvRank(currentIv){
   const rank = (lower / history.length) * 100;
   const ivValues = history.map(h=>h.iv);
   return { rank, samples: history.length, min: Math.min(...ivValues), max: Math.max(...ivValues) };
+}
+
+// ---- Error vs Move Size chart: how approximation error grows as move gets bigger ----
+function drawEpmErrorChart(nowObj, ivUsed, strikeK, dte, rate, divYield, step){
+  const container = document.getElementById('epmErrorChart');
+  if(!container) return;
+
+  const maxRange = step*4;
+  const numPoints = 40;
+  const points = [];
+  for(let i=0;i<=numPoints;i++){
+    const move = -maxRange + (2*maxRange)*(i/numPoints);
+    const deltaOnly = nowObj.delta*move;
+    const deltaGamma = nowObj.delta*move + 0.5*nowObj.gamma*move*move;
+    points.push({move, deltaOnly, deltaGamma});
+  }
+  // This chart shows |deltaGamma - deltaOnly| (Gamma's contribution) as a proxy for how
+  // much a pure-Delta estimate would have been wrong — the bigger this gap, the more
+  // Gamma/convexity matters at that move size.
+  const errPoints = points.map(p => ({ move: p.move, gammaContribution: p.deltaGamma - p.deltaOnly }));
+
+  const maxErr = Math.max(1, ...errPoints.map(p=>Math.abs(p.gammaContribution)));
+  const W = 640, H = 200, padL = 55, padR = 15, padT = 10, padB = 26;
+  const plotW = W-padL-padR, plotH = H-padT-padB;
+  function xPix(m){ return padL + ((m+maxRange)/(2*maxRange))*plotW; }
+  function yPix(e){ return padT + (1 - (e+maxErr)/(2*maxErr))*plotH; }
+
+  const path = errPoints.map((p,i)=>`${i===0?'M':'L'} ${xPix(p.move).toFixed(1)} ${yPix(p.gammaContribution).toFixed(1)}`).join(' ');
+  const zeroY = yPix(0);
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;">
+      <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="#555" stroke-width="1" stroke-dasharray="3,3"/>
+      <path d="${path}" fill="none" stroke="#E8A83C" stroke-width="2"/>
+      <text x="${padL-6}" y="${padT+8}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">${fmt(maxErr,0)}</text>
+      <text x="${padL-6}" y="${zeroY+3}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">0</text>
+      <text x="${padL}" y="${H-padB+14}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">-${fmt(maxRange,0)}</text>
+      <text x="${W/2}" y="${H-padB+14}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">0</text>
+      <text x="${W-padR}" y="${H-padB+14}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">+${fmt(maxRange,0)}</text>
+    </svg>
+    <div style="font-size:10.5px;color:var(--dim);margin-top:4px;">X-axis: index move (points) · Y-axis: Gamma ka contribution (₹) jo Delta-only miss kar deta — jitna dur move, utna zyada Gamma matter karta hai.</div>
+  `;
 }
 
 function drawOiBuildupChart(spot, step, numStrikes){
@@ -1679,6 +1775,61 @@ function render(){
     </div>
     <div class="foot-note" style="margin-top:4px;">Delta-only error: ${fmt(peEpm.deltaOnly-peEpm.fullReprice)} · Delta+Gamma error: ${fmt(peEpm.deltaGamma-peEpm.fullReprice)}</div>
   `;
+
+  // ---- Overnight Hold Estimate: Delta+Gamma (spot move) + Theta (1 day decay) combined ----
+  const overnightDiv = document.getElementById('overnightResult');
+  if(overnightDiv){
+    const ceOvernight = ceEpm.deltaGamma + ceNow.theta*1; // theta is already "per day"
+    const peOvernight = peEpm.deltaGamma + peNow.theta*1;
+    overnightDiv.innerHTML = `
+      <div style="font-size:11px;color:var(--dim);margin-bottom:6px;">Agar kal spot ${epmMove>=0?'+':''}${fmt(epmMove,0)} move kare AND 1 din guzre (dono ek saath):</div>
+      <div class="greeks-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="g-cell hi">
+          <div class="label">CE net expected move</div>
+          <div class="val" style="color:var(--ce);">${ceOvernight>=0?'+':''}${fmt(ceOvernight)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px;">Spot effect: ${ceEpm.deltaGamma>=0?'+':''}${fmt(ceEpm.deltaGamma)} · Theta cost: ${fmt(ceNow.theta)}</div>
+        </div>
+        <div class="g-cell hi">
+          <div class="label">PE net expected move</div>
+          <div class="val" style="color:var(--pe);">${peOvernight>=0?'+':''}${fmt(peOvernight)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px;">Spot effect: ${peEpm.deltaGamma>=0?'+':''}${fmt(peEpm.deltaGamma)} · Theta cost: ${fmt(peNow.theta)}</div>
+        </div>
+      </div>`;
+  }
+
+  // ---- Error vs Move Size chart ----
+  drawEpmErrorChart(ceNow, focusCeIv, focusK, dte, rate, divYield, step);
+
+  // ---- All Strikes EPM Comparison table ----
+  const epmAllBody = document.getElementById('epmAllStrikesBody');
+  if(epmAllBody){
+    const atmForEpm = nearestStep(spot, step);
+    let epmRows = '';
+    for(let i=-numStrikes; i<=numStrikes; i++){
+      const K = atmForEpm + i*step;
+      const kLive = liveChain ? liveChain[K] : null;
+      const kCeIv = (kLive && kLive.ceIv) || iv;
+      const kPeIv = (kLive && kLive.peIv) || iv;
+      const kCeNow = bs(spot, K, dte, kCeIv, rate, 'CE', divYield);
+      const kPeNow = bs(spot, K, dte, kPeIv, rate, 'PE', divYield);
+      const kCeDeltaOnly = kCeNow.delta * epmMove;
+      const kPeDeltaOnly = kPeNow.delta * epmMove;
+      const kCeFull = bs(epmNewSpot, K, dte, kCeIv, rate, 'CE', divYield).price - kCeNow.price;
+      const kPeFull = bs(epmNewSpot, K, dte, kPeIv, rate, 'PE', divYield).price - kPeNow.price;
+      const kCeErr = kCeDeltaOnly - kCeFull;
+      const kPeErr = kPeDeltaOnly - kPeFull;
+      epmRows += `<tr class="${K===atmForEpm?'atm':''}">
+        <td>${K}</td>
+        <td>${kCeDeltaOnly>=0?'+':''}${fmt(kCeDeltaOnly)}</td>
+        <td>${kCeFull>=0?'+':''}${fmt(kCeFull)}</td>
+        <td class="${Math.abs(kCeErr)<1?'':''}" style="color:${Math.abs(kCeErr)>3?'var(--pe)':'var(--dim)'};">${kCeErr>=0?'+':''}${fmt(kCeErr)}</td>
+        <td>${kPeDeltaOnly>=0?'+':''}${fmt(kPeDeltaOnly)}</td>
+        <td>${kPeFull>=0?'+':''}${fmt(kPeFull)}</td>
+        <td style="color:${Math.abs(kPeErr)>3?'var(--pe)':'var(--dim)'};">${kPeErr>=0?'+':''}${fmt(kPeErr)}</td>
+      </tr>`;
+    }
+    epmAllBody.innerHTML = epmRows;
+  }
 
   // ---- Trade Plan Premium Table (Entry / SL / TP1 / TP2 / TP3) ----
   populateFocusStrikes('tradeStrike', spot, step, numStrikes); // reuse strike list builder
