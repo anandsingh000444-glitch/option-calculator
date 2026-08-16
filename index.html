@@ -146,6 +146,11 @@
 </style>
 </head>
 <body>
+<div id="stickyVolumeBar" style="position:sticky;top:0;z-index:100;background:#0d1216;border-bottom:1px solid var(--line);padding:8px 14px;font-family:var(--mono);font-size:11.5px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+  <span style="color:var(--dim);">🔥 Highest Volume:</span>
+  <span id="stickyVolCe" style="color:var(--ce);">CE —</span>
+  <span id="stickyVolPe" style="color:var(--pe);">PE —</span>
+</div>
 <div class="wrap">
 
   <div class="hero">
@@ -306,6 +311,7 @@
         <input type="number" id="moveVal" value="200" step="10">
         <button onclick="bumpMove(50)">+</button>
       </div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px;">⚠ Agar ye 0 ya khaali hai, to "All Strikes" table mein Before/After same dikhega (Δ=0.00) — ye normal hai, bug nahi. EPM Lab tab ka apna alag "Move" field hai.</div>
 
       <label>Strikes each side to show</label>
       <input type="number" id="numStrikes" value="5" step="1">
@@ -508,11 +514,12 @@
       </div>
 
       <div class="card section-gap">
-        <h2>Max Pain &amp; OI Buildup <span class="badge">Live Upstox chain se</span></h2>
+        <h2>Max Pain, Volume &amp; OI Buildup <span class="badge">Live Upstox chain se</span></h2>
         <div class="foot-note" style="margin-bottom:10px;">
           Max Pain woh strike hai jahan expiry par option writers (jo majority volume control karte hain) ka total payout sabse kam hoga — traders ise ek popular (par 100% reliable nahi) support/resistance heuristic ki tarah dekhte hain.
         </div>
         <div id="maxPainDisplay"></div>
+        <div id="highestVolumeDisplay" class="section-gap"></div>
         <div id="oiChart" class="section-gap"></div>
 
         <h2 class="section-gap">IV Rank / Percentile <span class="badge">Apna history, ab se track hoga</span></h2>
@@ -580,6 +587,11 @@
           </div>
           <label>Move index by (points)</label>
           <input type="number" id="epmMove" value="50" step="10">
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <button type="button" onclick="document.getElementById('epmMove').value=document.getElementById('moveVal').value; render();" style="flex:1;padding:6px 0;background:none;border:1px solid var(--line);color:var(--amber);border-radius:5px;font-family:var(--mono);font-size:10.5px;cursor:pointer;">← Calculator ka move lo</button>
+            <button type="button" onclick="document.getElementById('moveVal').value=document.getElementById('epmMove').value; render();" style="flex:1;padding:6px 0;background:none;border:1px solid var(--line);color:var(--amber);border-radius:5px;font-family:var(--mono);font-size:10.5px;cursor:pointer;">Calculator ko bhejo →</button>
+          </div>
+          <div style="font-size:10px;color:var(--dim);margin-top:4px;">⚠ Ye field Calculator tab ke "Move index by" se ALAG hai (jaan-boojh kar, taaki dono jagah alag scenario test kar sako). Agar dono same rakhne hain, upar wale buttons se sync kar lo.</div>
           <div id="epmResult" class="section-gap"></div>
         </div>
 
@@ -687,6 +699,7 @@ let liveChain = null;
 let liveSpot = null;
 let livePCR = null;
 let liveMaxPain = null;
+let liveHighestVolume = null;
 
 function computeMaxPain(chain){
   const strikes = Object.keys(chain).map(Number);
@@ -752,25 +765,34 @@ async function fetchUpstoxChain(){
     const chain = {};
     let spotVal = null;
     let totalCeOi = 0, totalPeOi = 0;
+    let maxCeVolStrike = null, maxCeVol = -1;
+    let maxPeVolStrike = null, maxPeVol = -1;
     rows.forEach(r=>{
       const K = r.strike_price;
       if(spotVal===null && r.underlying_spot_price) spotVal = r.underlying_spot_price;
       const ceOi = r.call_options?.market_data?.oi ?? 0;
       const peOi = r.put_options?.market_data?.oi ?? 0;
+      const ceVolume = r.call_options?.market_data?.volume ?? 0;
+      const peVolume = r.put_options?.market_data?.volume ?? 0;
       totalCeOi += ceOi;
       totalPeOi += peOi;
+      if(ceVolume > maxCeVol){ maxCeVol = ceVolume; maxCeVolStrike = K; }
+      if(peVolume > maxPeVol){ maxPeVol = peVolume; maxPeVolStrike = K; }
       chain[K] = {
         ceLtp: r.call_options?.market_data?.ltp ?? null,
         ceIv: r.call_options?.option_greeks?.iv ?? null,
         ceOi: ceOi,
+        ceVolume: ceVolume,
         peLtp: r.put_options?.market_data?.ltp ?? null,
         peIv: r.put_options?.option_greeks?.iv ?? null,
         peOi: peOi,
+        peVolume: peVolume,
       };
     });
 
     liveChain = chain;
     liveSpot = spotVal;
+    liveHighestVolume = { ceStrike: maxCeVolStrike, ceVolume: maxCeVol, peStrike: maxPeVolStrike, peVolume: maxPeVol };
     livePCR = totalCeOi > 0 ? (totalPeOi / totalCeOi) : null;
     liveMaxPain = computeMaxPain(chain);
     if(spotVal){ document.getElementById('spot').value = Math.round(spotVal); }
@@ -2121,6 +2143,38 @@ function render(){
   } else {
     maxPainDiv.innerHTML = `<div class="foot-note">Live chain pull karo (Upstox) — Max Pain automatically calculate ho jayega.</div>`;
   }
+
+  const highVolDiv = document.getElementById('highestVolumeDisplay');
+  const stickyCe = document.getElementById('stickyVolCe');
+  const stickyPe = document.getElementById('stickyVolPe');
+  const currentInstrumentLabel = isStockMode
+    ? (document.getElementById('stockSymbol').value.trim() || 'Stock')
+    : document.getElementById('indexName').value;
+
+  if(liveHighestVolume && liveHighestVolume.ceStrike != null){
+    highVolDiv.innerHTML = `
+      <div class="greeks-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="g-cell hi">
+          <div class="label">Highest Volume — CE (${currentInstrumentLabel})</div>
+          <div class="val" style="color:var(--ce);">${fmt(liveHighestVolume.ceStrike,0)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px;">Volume: ${fmt(liveHighestVolume.ceVolume,0)}</div>
+        </div>
+        <div class="g-cell hi">
+          <div class="label">Highest Volume — PE (${currentInstrumentLabel})</div>
+          <div class="val" style="color:var(--pe);">${fmt(liveHighestVolume.peStrike,0)}</div>
+          <div style="font-size:10px;color:var(--dim);margin-top:3px;">Volume: ${fmt(liveHighestVolume.peVolume,0)}</div>
+        </div>
+      </div>
+      <div class="foot-note" style="margin-top:6px;">Ye batata hai aaj sabse zyada trading activity kis strike pe hui — sabse liquid/active contract, jaha bid-ask spread bhi usually sabse tight hota hai.</div>`;
+
+    if(stickyCe) stickyCe.textContent = `CE ${fmt(liveHighestVolume.ceStrike,0)} (${fmt(liveHighestVolume.ceVolume,0)})`;
+    if(stickyPe) stickyPe.textContent = `PE ${fmt(liveHighestVolume.peStrike,0)} (${fmt(liveHighestVolume.peVolume,0)})`;
+  } else {
+    highVolDiv.innerHTML = `<div class="foot-note">Live chain pull karo — Highest Volume Strike yahan dikhega.</div>`;
+    if(stickyCe) stickyCe.textContent = 'CE —';
+    if(stickyPe) stickyPe.textContent = 'PE —';
+  }
+
   drawOiBuildupChart(spot, step, numStrikes);
 
   const ivRankDiv = document.getElementById('ivRankDisplay');
