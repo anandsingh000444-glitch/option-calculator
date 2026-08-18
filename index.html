@@ -508,6 +508,13 @@
         <div class="foot-note" style="margin-top:10px;">PCR (Put-Call OI Ratio) Upstox live chain se auto-calculate hota hai — "Pull Live Chain (Upstox)" button dabane ke baad yahan khud dikh jayega, kisi entry ki zaroorat nahi.</div>
         <div class="greeks-grid section-gap sentiment-grid-3" id="sentimentGrid" style="grid-template-columns:repeat(3,1fr);"></div>
 
+        <h2 class="section-gap">PCR Meter <span class="badge">Advanced — 5-zone + historical rank</span></h2>
+        <div class="foot-note" style="margin-bottom:10px;">
+          Put-Call OI Ratio ka detailed breakdown — sirf ek number nahi, poora zone-based gauge, trend, aur historical percentile (jaisa IV Rank).
+        </div>
+        <div id="pcrMeterGauge"></div>
+        <div id="pcrMeterStats" class="section-gap"></div>
+
         <h2 class="section-gap">ARTH — AI Risk Thermometer <span class="badge">Custom composite, official metric nahi</span></h2>
         <div class="foot-note" style="margin-bottom:10px;">VIX + PCR + expiry-nearness (gamma risk) ko milaake ek hi 0-100 risk score — "market abhi kitni jhatke wali/risky state mein hai" iska ek quick heuristic sense.</div>
         <div id="arthGauge"></div>
@@ -700,6 +707,7 @@ let liveSpot = null;
 let livePCR = null;
 let liveMaxPain = null;
 let liveHighestVolume = null;
+let liveNearAtmPCR = null;
 
 function computeMaxPain(chain){
   const strikes = Object.keys(chain).map(Number);
@@ -794,7 +802,24 @@ async function fetchUpstoxChain(){
     liveSpot = spotVal;
     liveHighestVolume = { ceStrike: maxCeVolStrike, ceVolume: maxCeVol, peStrike: maxPeVolStrike, peVolume: maxPeVol };
     livePCR = totalCeOi > 0 ? (totalPeOi / totalCeOi) : null;
+
+    // Near-ATM PCR: full-chain PCR can be skewed by far-OTM hedging OI; near-the-money
+    // OI reflects more immediate/actionable sentiment. Uses ATM ± 3 strikes.
+    if(spotVal){
+      const stepForNearAtm = parseFloat(document.getElementById('stepSize').value) || 50;
+      const atmForNearAtm = Math.round(spotVal/stepForNearAtm)*stepForNearAtm;
+      let nearCeOi = 0, nearPeOi = 0;
+      for(let i=-3;i<=3;i++){
+        const K = atmForNearAtm + i*stepForNearAtm;
+        if(chain[K]){ nearCeOi += chain[K].ceOi||0; nearPeOi += chain[K].peOi||0; }
+      }
+      liveNearAtmPCR = nearCeOi > 0 ? (nearPeOi/nearCeOi) : null;
+    } else {
+      liveNearAtmPCR = null;
+    }
+
     liveMaxPain = computeMaxPain(chain);
+    if(livePCR != null) snapshotPcrHistory(livePCR);
     if(spotVal){ document.getElementById('spot').value = Math.round(spotVal); }
 
     // Snapshot ATM's average CE/PE IV for IV Rank tracking (built up over time, no external DB)
@@ -1275,6 +1300,67 @@ let autoTimers = { upstox: null, angel: null };
 
 // ---- OI Buildup Chart: grouped bars of Call OI vs Put OI per strike ----
 // ---- IV Rank/Percentile: track ATM IV history ourselves over time (no external database) ----
+// ---- PCR Meter: history tracking, rank, and 5-zone gauge ----
+function loadPcrHistory(){
+  try{ return JSON.parse(localStorage.getItem('optcalc_pcr_history') || '[]'); }
+  catch(e){ return []; }
+}
+function savePcrHistory(arr){
+  try{ localStorage.setItem('optcalc_pcr_history', JSON.stringify(arr.slice(-500))); }
+  catch(e){ /* ignore */ }
+}
+function snapshotPcrHistory(pcrValue){
+  if(pcrValue == null || !isFinite(pcrValue)) return;
+  const history = loadPcrHistory();
+  const last = history[history.length-1];
+  if(last && (Date.now() - last.ts) < 15*60*1000) return; // avoid flooding, max 1 sample/15min
+  history.push({ pcr: pcrValue, ts: Date.now() });
+  savePcrHistory(history);
+}
+function computePcrRank(currentPcr){
+  const history = loadPcrHistory();
+  const MIN_SAMPLES = 20;
+  if(history.length < MIN_SAMPLES) return { rank: null, samples: history.length, needed: MIN_SAMPLES };
+  const lower = history.filter(h => h.pcr < currentPcr).length;
+  const rank = (lower / history.length) * 100;
+  const pcrValues = history.map(h=>h.pcr);
+  return { rank, samples: history.length, min: Math.min(...pcrValues), max: Math.max(...pcrValues) };
+}
+function computePcrTrend(currentPcr){
+  const history = loadPcrHistory();
+  if(history.length < 2) return null;
+  // Compare against a snapshot from roughly 1-2 hours ago (or the oldest available if less history)
+  const targetTs = Date.now() - 90*60*1000;
+  let ref = history[0];
+  for(const h of history){ if(h.ts <= targetTs) ref = h; else break; }
+  const diff = currentPcr - ref.pcr;
+  if(Math.abs(diff) < 0.03) return { direction: 'Flat', diff };
+  return { direction: diff > 0 ? 'Rising' : 'Falling', diff };
+}
+
+function drawPcrGauge(pcrValue){
+  const container = document.getElementById('pcrMeterGauge');
+  if(!container) return;
+  const scaleMin = 0, scaleMax = 2.2;
+  const clamped = Math.max(scaleMin, Math.min(scaleMax, pcrValue));
+  const pct = ((clamped - scaleMin) / (scaleMax - scaleMin)) * 100;
+
+  // 5 zones: Strongly Bearish / Bearish / Neutral / Bullish / Strongly Bullish
+  container.innerHTML = `
+    <div style="position:relative;height:22px;border-radius:4px;overflow:hidden;background:linear-gradient(to right,
+        #B91C1C 0%, #B91C1C 18%,
+        #F0553D 18%, #F0553D 32%,
+        #E8A83C 32%, #E8A83C 50%,
+        #7DD3A8 50%, #7DD3A8 64%,
+        #22C583 64%, #22C583 100%);">
+      <div style="position:absolute;top:-4px;left:${pct}%;transform:translateX(-50%);width:2px;height:30px;background:#fff;box-shadow:0 0 4px #fff;"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:8.5px;color:var(--dim);margin-top:3px;font-family:var(--mono);">
+      <span>0 (Str.Bear)</span><span>0.9</span><span>1.0</span><span>1.4</span><span>2.2+ (Str.Bull)</span>
+    </div>
+  `;
+}
+
 function loadIvHistory(){
   try{ return JSON.parse(localStorage.getItem('optcalc_iv_history') || '[]'); }
   catch(e){ return []; }
@@ -2096,6 +2182,50 @@ function render(){
   const pcrGaugeLabel = livePCR!=null ? (pcrScore>66?'Bullish':(pcrScore<33?'Bearish':'Neutral')) : 'No live data';
   drawSentimentNeedle(pcrScore, pcrGaugeLabel);
 
+  // ---- PCR Meter: gauge + stats + trend ----
+  if(livePCR != null){
+    drawPcrGauge(livePCR);
+    const pcrRankInfo = computePcrRank(livePCR);
+    const pcrTrend = computePcrTrend(livePCR);
+    const zoneLabel = livePCR<0.7?'Strongly Bearish':(livePCR<0.9?'Bearish':(livePCR<1.1?'Neutral':(livePCR<1.4?'Bullish':'Strongly Bullish')));
+    const zoneColor = livePCR<0.7?'#B91C1C':(livePCR<0.9?'#F0553D':(livePCR<1.1?'#E8A83C':(livePCR<1.4?'#7DD3A8':'#22C583')));
+    const trendHtml = pcrTrend
+      ? `<div class="g-cell"><div class="label">Trend (~90 min)</div><div class="val" style="font-size:15px;color:${pcrTrend.direction==='Rising'?'var(--ce)':(pcrTrend.direction==='Falling'?'var(--pe)':'var(--dim)')};">${pcrTrend.direction} ${pcrTrend.diff>=0?'+':''}${fmt(pcrTrend.diff,2)}</div></div>`
+      : `<div class="g-cell"><div class="label">Trend</div><div class="val" style="font-size:12px;color:var(--dim);">History jama ho rahi hai</div></div>`;
+    const rankHtml = pcrRankInfo.rank != null
+      ? `<div class="g-cell"><div class="label">Historical Rank (${pcrRankInfo.samples} samples)</div><div class="val" style="font-size:15px;">${fmt(pcrRankInfo.rank,0)}%ile <span style="font-size:11px;color:var(--dim);">(${fmt(pcrRankInfo.min,2)}–${fmt(pcrRankInfo.max,2)})</span></div></div>`
+      : `<div class="g-cell"><div class="label">Historical Rank</div><div class="val" style="font-size:12px;color:var(--dim);">${pcrRankInfo.samples}/${pcrRankInfo.needed} samples</div></div>`;
+
+    let nearAtmHtml = '';
+    if(liveNearAtmPCR != null){
+      const nearZoneLabel = liveNearAtmPCR<0.7?'Strongly Bearish':(liveNearAtmPCR<0.9?'Bearish':(liveNearAtmPCR<1.1?'Neutral':(liveNearAtmPCR<1.4?'Bullish':'Strongly Bullish')));
+      const nearZoneColor = liveNearAtmPCR<0.7?'#B91C1C':(liveNearAtmPCR<0.9?'#F0553D':(liveNearAtmPCR<1.1?'#E8A83C':(liveNearAtmPCR<1.4?'#7DD3A8':'#22C583')));
+      const divergence = Math.abs(liveNearAtmPCR - livePCR);
+      const divergenceNote = divergence > 0.25
+        ? `<div class="foot-note" style="margin-top:6px;color:var(--amber);">⚠ Near-ATM aur Full-Chain PCR mein bada farak hai (${fmt(divergence,2)}) — matlab far-OTM strikes pe heavy hedging positions hain jo overall PCR ko skew kar rahi hain. Near-ATM number zyada trust karo immediate sentiment ke liye.</div>`
+        : `<div class="foot-note" style="margin-top:6px;">Near-ATM aur Full-Chain PCR kareeb hain — dono consistent signal de rahe hain.</div>`;
+      nearAtmHtml = `
+        <div class="greeks-grid section-gap" style="grid-template-columns:repeat(2,1fr);">
+          <div class="g-cell"><div class="label">Full-Chain PCR</div><div class="val" style="font-size:15px;color:${zoneColor};">${fmt(livePCR,2)} <span style="font-size:11px;">(${zoneLabel})</span></div></div>
+          <div class="g-cell hi"><div class="label">Near-ATM PCR (±3 strikes) <span class="badge">more actionable</span></div><div class="val" style="font-size:15px;color:${nearZoneColor};">${fmt(liveNearAtmPCR,2)} <span style="font-size:11px;">(${nearZoneLabel})</span></div></div>
+        </div>
+        ${divergenceNote}`;
+    }
+
+    document.getElementById('pcrMeterStats').innerHTML = `
+      <div class="greeks-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="g-cell hi"><div class="label">Current PCR</div><div class="val" style="color:${zoneColor};">${fmt(livePCR,2)}</div></div>
+        <div class="g-cell hi"><div class="label">Zone</div><div class="val" style="font-size:14px;color:${zoneColor};">${zoneLabel}</div></div>
+        ${trendHtml}
+      </div>
+      <div class="greeks-grid section-gap" style="grid-template-columns:1fr;">${rankHtml}</div>
+      ${nearAtmHtml}
+    `;
+  } else {
+    document.getElementById('pcrMeterGauge').innerHTML = '';
+    document.getElementById('pcrMeterStats').innerHTML = `<div class="foot-note">Live chain pull karo (Upstox) — PCR Meter yahan dikhega.</div>`;
+  }
+
   // ---- ARTH: AI Risk Thermometer (custom composite heuristic, not an official metric) ----
   // Component 1: VIX — higher fear = higher risk (0-30 scale -> 0-100)
   const vixRisk = Math.min(100, (vix/30)*100);
@@ -2247,8 +2377,18 @@ function render(){
 }
 
 // wire inputs
+// Debounced render: typing fast in any field used to trigger a FULL render() (charts,
+// tables, EPM comparisons — all heavy) on every single keystroke, which could stack up
+// and hang the browser, especially combined with fast auto-refresh. Now render() waits
+// until 200ms after you stop typing before actually running.
+let renderDebounceTimer = null;
+function renderDebounced(){
+  clearTimeout(renderDebounceTimer);
+  renderDebounceTimer = setTimeout(render, 200);
+}
+
 ['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize','dividendYield','stockSymbol','stockInstrumentKey','epmMove'].forEach(id=>{
-  document.getElementById(id).addEventListener('input', render);
+  document.getElementById(id).addEventListener('input', renderDebounced);
 });
 document.getElementById('focusStrike').addEventListener('change', render);
 document.getElementById('tradeStrike').addEventListener('change', render);
