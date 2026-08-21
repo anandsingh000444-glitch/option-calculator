@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0A0D10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="OptionCalc">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <title>Option Greeks &amp; Premium Simulator</title>
 <style>
   :root{
@@ -150,6 +156,10 @@
   <span style="color:var(--dim);">🔥 Highest Volume:</span>
   <span id="stickyVolCe" style="color:var(--ce);">CE —</span>
   <span id="stickyVolPe" style="color:var(--pe);">PE —</span>
+</div>
+<div id="renderErrorBanner" style="display:none;position:sticky;top:38px;z-index:99;background:#3A1D18;border-bottom:1px solid var(--pe);padding:8px 14px;font-family:var(--mono);font-size:11px;color:var(--pe);">
+  ⚠ Ek calculation error aayi hai (page crash nahi hua, sirf ye update ruka hai): <span id="renderErrorMsg"></span>
+  <button onclick="document.getElementById('renderErrorBanner').style.display='none'" style="margin-left:10px;background:none;border:1px solid var(--pe);color:var(--pe);padding:2px 8px;border-radius:3px;cursor:pointer;font-size:10px;">Dismiss</button>
 </div>
 <div class="wrap">
 
@@ -655,6 +665,17 @@
             Apna trading PIN/TOTP kabhi is page mein mat daalna — sirf wo JWT token daalein jo aap apne trusted login flow se pehle hi generate kar chuke hain.
           </div>
         </div>
+
+        <div class="card section-gap">
+          <h2>🩺 Self-Test / Diagnostics</h2>
+          <div class="foot-note" style="margin-bottom:10px;">
+            Ek click mein saari live-data connections (Proxy, Upstox, Angel One, News, GDELT) check karo — pata chal jayega kya kaam kar raha hai, kya nahi, aur kyun.
+          </div>
+          <button type="button" id="diagnosticsBtn" onclick="runDiagnostics()" style="width:100%;padding:9px 0;background:none;border:1px solid var(--amber);color:var(--amber);border-radius:5px;font-family:var(--mono);font-size:12px;cursor:pointer;">
+            🩺 Run Diagnostics
+          </button>
+          <div id="diagnosticsResults" class="section-gap"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -708,11 +729,14 @@ function bs(S,K,Tdays,sigmaPct,rPct,type,qPct){
   // multi-term dividend-adjusted derivation.
   const gamma = discQ*pd1/(S*sigma*sqrtT);
   const vega = (S*discQ*pd1*sqrtT)/100;
-  const vanna = -discQ*pd1*d2/sigma;
-  const vomma = vega*d1*d2/sigma;
-  const charm = (-discQ*pd1*(2*(r-q)*T - d2*sigma*sqrtT)/(2*T*sigma*sqrtT))/365;
+  // Vanna/Vomma/Zomma scaled by /100 to match Vega's "per 1 percentage-point of IV"
+  // convention (Vega itself is S*discQ*pd1*sqrtT/100) — the un-scaled textbook formulas
+  // are per-unit-decimal-sigma, which was 100x too large here before this fix.
+  const vanna = (-discQ*pd1*d2/sigma)/100;
+  const vomma = (vega*d1*d2/sigma)/100;
+  const charm = (discQ*pd1*(2*(r-q)*T - d2*sigma*sqrtT)/(2*T*sigma*sqrtT))/365;
   const speed = (-gamma/S)*(d1/(sigma*sqrtT)+1);
-  const zomma = gamma*(d1*d2-1)/sigma;
+  const zomma = (gamma*(d1*d2-1)/sigma)/100;
   const color = (-discQ*pd1/(2*S*T*sigma*sqrtT))*(1 + (2*(r-q)*T - d2*sigma*sqrtT)/(sigma*sqrtT)*d1)/365;
   const lambda = price>0.05 ? (delta*S/price) : 0;
 
@@ -1165,6 +1189,93 @@ function autoCalcDte(){
   const daysRemaining = Math.max(0.001, msRemaining / (1000*60*60*24));
   document.getElementById('dte').value = daysRemaining.toFixed(3);
   render();
+}
+
+async function runDiagnostics(){
+  const btn = document.getElementById('diagnosticsBtn');
+  const resultsDiv = document.getElementById('diagnosticsResults');
+  btn.disabled = true; btn.textContent = '🩺 Running...';
+  const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
+
+  const checks = [
+    {
+      name: 'Proxy Server reachability',
+      run: async () => {
+        const resp = await fetch(proxyBase + '/', { signal: AbortSignal.timeout(6000) });
+        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return 'Proxy server responding';
+      }
+    },
+    {
+      name: 'Upstox proxy endpoint',
+      run: async () => {
+        const resp = await fetch(proxyBase + '/api/upstox-chain', { signal: AbortSignal.timeout(6000) });
+        const json = await resp.json().catch(()=>({}));
+        // Missing-param error is EXPECTED here (means the endpoint exists and responded)
+        if(resp.status === 400 || json.error) return 'Endpoint deployed and responding';
+        if(resp.ok) return 'Endpoint deployed and responding';
+        throw new Error(`HTTP ${resp.status} — endpoint shayad deploy nahi hua`);
+      }
+    },
+    {
+      name: 'Angel One proxy endpoint',
+      run: async () => {
+        const resp = await fetch(proxyBase + '/api/angel-greeks', { signal: AbortSignal.timeout(6000) });
+        const json = await resp.json().catch(()=>({}));
+        if(resp.status === 400 || json.error) return 'Endpoint deployed and responding';
+        if(resp.ok) return 'Endpoint deployed and responding';
+        throw new Error(`HTTP ${resp.status} — endpoint shayad deploy nahi hua`);
+      }
+    },
+    {
+      name: 'GDELT proxy (Geopolitical Risk)',
+      run: async () => {
+        const resp = await fetch(proxyBase + '/api/gdelt?query=India', { signal: AbortSignal.timeout(8000) });
+        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return 'Responding';
+      }
+    },
+    {
+      name: 'News proxy (GNews/NewsAPI/Marketaux)',
+      run: async () => {
+        const resp = await fetch(proxyBase + '/api/market-news?symbols=NIFTY', { signal: AbortSignal.timeout(8000) });
+        const json = await resp.json().catch(()=>({}));
+        if(resp.ok && json.data?.length) return `Working via ${json.provider || 'unknown provider'}`;
+        if(resp.status === 502) return 'Deployed, par saare providers fail ho rahe hain — API keys check karein';
+        throw new Error(`HTTP ${resp.status}`);
+      }
+    },
+    {
+      name: 'Upstox Access Token',
+      run: async () => {
+        const token = document.getElementById('upstoxToken').value.trim();
+        if(!token) return 'Khaali hai (optional check — daalo agar Upstox use karna hai)';
+        return `Set hai (${token.length} characters)`;
+      }
+    },
+    {
+      name: 'Angel One JWT Token',
+      run: async () => {
+        const token = document.getElementById('angelJwt').value.trim();
+        if(!token) return 'Khaali hai (optional check — daalo agar Angel One use karna hai)';
+        return `Set hai (${token.length} characters)`;
+      }
+    },
+  ];
+
+  resultsDiv.innerHTML = checks.map((c,i)=>`<div id="diagCheck${i}" style="padding:6px 0;font-size:11.5px;font-family:var(--mono);border-bottom:1px solid #1a1f25;">⏳ ${c.name}...</div>`).join('');
+
+  for(let i=0;i<checks.length;i++){
+    const el = document.getElementById('diagCheck'+i);
+    try{
+      const msg = await checks[i].run();
+      el.innerHTML = `<span style="color:var(--ce);">✓</span> ${checks[i].name} — <span style="color:var(--dim);">${msg}</span>`;
+    }catch(err){
+      el.innerHTML = `<span style="color:var(--pe);">✗</span> ${checks[i].name} — <span style="color:var(--pe);">${err.message || String(err)}</span>`;
+    }
+  }
+
+  btn.disabled = false; btn.textContent = '🩺 Run Diagnostics';
 }
 
 async function findInstrumentKey(){
@@ -1841,6 +1952,21 @@ function updateAutoInterval(which){
 }
 
 function render(){
+  try{
+    renderInner();
+    const errBanner = document.getElementById('renderErrorBanner');
+    if(errBanner) errBanner.style.display = 'none';
+  }catch(err){
+    console.error('Render error:', err);
+    const errBanner = document.getElementById('renderErrorBanner');
+    if(errBanner){
+      errBanner.style.display = 'block';
+      errBanner.querySelector('#renderErrorMsg').textContent = err.message || String(err);
+    }
+  }
+}
+
+function renderInner(){
   const spot = parseFloat(document.getElementById('spot').value)||0;
   const step = parseFloat(document.getElementById('stepSize').value)||50;
   const iv = parseFloat(document.getElementById('iv').value)||0;
