@@ -355,15 +355,26 @@
       </div>
 
       <div class="card section-gap">
-        <h2>Payoff Diagram <span class="badge">Expiry P&amp;L</span></h2>
+        <h2>Payoff Diagram <span class="badge">Expiry P&amp;L — Multi-leg</span></h2>
         <div class="foot-note" style="margin-bottom:10px;">
-          Agar Entry premium par CE/PE khareed ke expiry tak hold karo, to alag-alag expiry-spot levels par profit/loss kaisa dikhega — X-axis: NIFTY expiry par kahan band hoga, Y-axis: ₹ profit/loss (lot size ke saath).
+          Single option se lekar Straddle/Strangle/Spreads tak — Strategy select karo, X-axis: NIFTY expiry par kahan band hoga, Y-axis: ₹ combined profit/loss (lot size ke saath).
         </div>
-        <div id="payoffChart"></div>
-        <div style="display:flex;gap:16px;margin-top:8px;font-size:11px;">
-          <span style="color:var(--ce);">━ CE (Buy Call)</span>
-          <span style="color:var(--pe);">━ PE (Buy Put)</span>
+        <label>Strategy</label>
+        <select id="payoffStrategy" onchange="toggleStrike2Field(); render();">
+          <option value="ce_buy">Single — Buy CE</option>
+          <option value="pe_buy">Single — Buy PE</option>
+          <option value="straddle">Long Straddle (Buy CE + Buy PE, same strike)</option>
+          <option value="strangle">Long Strangle (Buy CE higher + Buy PE lower strike)</option>
+          <option value="bull_call_spread">Bull Call Spread (Buy CE lower + Sell CE higher)</option>
+          <option value="bear_put_spread">Bear Put Spread (Buy PE higher + Sell PE lower)</option>
+        </select>
+        <div id="strike2Field" style="display:none;">
+          <label>Strike 2 (dusri leg ke liye)</label>
+          <input type="number" id="payoffStrike2" value="24400" step="50">
         </div>
+        <div id="payoffChart" class="section-gap"></div>
+        <div id="payoffLegend" style="display:flex;gap:16px;margin-top:8px;font-size:11px;flex-wrap:wrap;"></div>
+        <div id="payoffStrategySummary" class="section-gap"></div>
       </div>
 
       <div class="card section-gap">
@@ -1659,54 +1670,87 @@ function drawOiBuildupChart(spot, step, numStrikes){
 }
 
 // ---- Payoff Diagram: SVG chart of P&L at expiry across a spot range ----
-function drawPayoffDiagram(strikeK, ceEntryPremium, peEntryPremium, lotSize, step, currentSpot){
+function premiumAtStrike(K, type, spot, dte, rate, divYield, ivFallback){
+  const kLive = liveChain ? liveChain[K] : null;
+  const kIv = (type==='CE' ? kLive?.ceIv : kLive?.peIv) || ivFallback;
+  const liveLtp = type==='CE' ? kLive?.ceLtp : kLive?.peLtp;
+  if(liveLtp != null) return liveLtp;
+  return bs(spot, K, dte, kIv, rate, type, divYield).price;
+}
+
+function getStrategyLegs(strategy, strikeK, strike2){
+  const s2 = strike2 || (strikeK + 200);
+  const hi = Math.max(strikeK, s2), lo = Math.min(strikeK, s2);
+  switch(strategy){
+    case 'ce_buy':    return [{ type:'CE', pos:1,  strike:strikeK }];
+    case 'pe_buy':     return [{ type:'PE', pos:1,  strike:strikeK }];
+    case 'straddle':   return [{ type:'CE', pos:1, strike:strikeK }, { type:'PE', pos:1, strike:strikeK }];
+    case 'strangle':   return [{ type:'CE', pos:1, strike:hi }, { type:'PE', pos:1, strike:lo }];
+    case 'bull_call_spread': return [{ type:'CE', pos:1, strike:lo }, { type:'CE', pos:-1, strike:hi }];
+    case 'bear_put_spread':  return [{ type:'PE', pos:1, strike:hi }, { type:'PE', pos:-1, strike:lo }];
+    default: return [{ type:'CE', pos:1, strike:strikeK }];
+  }
+}
+
+function drawPayoffDiagram(strikeK, spot, dte, rate, divYield, ivFallback, lotSize, step, currentSpot){
   const container = document.getElementById('payoffChart');
   if(!container) return;
 
-  const rangeWidth = step * 6; // show 6 strike-steps either side of the strike
-  const minSpot = strikeK - rangeWidth;
-  const maxSpot = strikeK + rangeWidth;
-  const numPoints = 60;
+  const strategy = document.getElementById('payoffStrategy')?.value || 'ce_buy';
+  const strike2 = parseFloat(document.getElementById('payoffStrike2')?.value) || (strikeK + 200);
+  const legs = getStrategyLegs(strategy, strikeK, strike2);
+
+  // Entry premium for each leg, at today's spot (this is what we pay/receive now)
+  legs.forEach(leg => { leg.entryPremium = premiumAtStrike(leg.strike, leg.type, spot, dte, rate, divYield, ivFallback); });
+
+  const allStrikes = legs.map(l=>l.strike);
+  const centerStrike = (Math.min(...allStrikes) + Math.max(...allStrikes)) / 2;
+  const rangeWidth = step * 6 + (Math.max(...allStrikes) - Math.min(...allStrikes));
+  const minSpot = centerStrike - rangeWidth;
+  const maxSpot = centerStrike + rangeWidth;
+  const numPoints = 80;
 
   const points = [];
   for(let i=0; i<=numPoints; i++){
     const s = minSpot + (maxSpot-minSpot)*(i/numPoints);
-    const cePnl = (Math.max(0, s - strikeK) - ceEntryPremium) * lotSize;
-    const pePnl = (Math.max(0, strikeK - s) - peEntryPremium) * lotSize;
-    points.push({s, cePnl, pePnl});
+    let combinedPnl = 0;
+    legs.forEach(leg=>{
+      const intrinsic = leg.type==='CE' ? Math.max(0, s-leg.strike) : Math.max(0, leg.strike-s);
+      combinedPnl += leg.pos * (intrinsic - leg.entryPremium) * lotSize;
+    });
+    points.push({ s, pnl: combinedPnl });
   }
 
-  const allPnl = points.flatMap(p=>[p.cePnl, p.pePnl]);
+  const allPnl = points.map(p=>p.pnl);
   const minPnl = Math.min(...allPnl, 0);
   const maxPnl = Math.max(...allPnl, 0);
   const pnlRange = Math.max(1, maxPnl - minPnl);
 
   const W = 640, H = 260, padL = 60, padR = 20, padT = 16, padB = 34;
   const plotW = W - padL - padR, plotH = H - padT - padB;
-
   function xPix(s){ return padL + ((s - minSpot)/(maxSpot-minSpot)) * plotW; }
   function yPix(pnl){ return padT + (1 - (pnl - minPnl)/pnlRange) * plotH; }
-
-  function pathFor(key){
-    return points.map((p,i)=> `${i===0?'M':'L'} ${xPix(p.s).toFixed(1)} ${yPix(p[key]).toFixed(1)}`).join(' ');
-  }
+  const path = points.map((p,i)=> `${i===0?'M':'L'} ${xPix(p.s).toFixed(1)} ${yPix(p.pnl).toFixed(1)}`).join(' ');
 
   const zeroY = yPix(0);
   const spotX = xPix(Math.max(minSpot, Math.min(maxSpot, currentSpot)));
 
-  // Breakeven points: where CE/PE P&L crosses zero
-  function findBreakeven(key){
-    for(let i=1;i<points.length;i++){
-      const a = points[i-1][key], b = points[i][key];
-      if((a<0 && b>=0) || (a>=0 && b<0)){
-        const t = Math.abs(a)/(Math.abs(a)+Math.abs(b));
-        return points[i-1].s + (points[i].s - points[i-1].s)*t;
-      }
+  const breakevens = [];
+  for(let i=1;i<points.length;i++){
+    const a = points[i-1].pnl, b = points[i].pnl;
+    if((a<0 && b>=0) || (a>=0 && b<0)){
+      const t = Math.abs(a)/(Math.abs(a)+Math.abs(b));
+      breakevens.push(points[i-1].s + (points[i].s - points[i-1].s)*t);
     }
-    return null;
   }
-  const ceBreakeven = findBreakeven('cePnl');
-  const peBreakeven = findBreakeven('pePnl');
+
+  const netPremium = legs.reduce((sum,l)=> sum + l.pos*l.entryPremium, 0);
+  const maxLoss = Math.min(...allPnl);
+  const maxProfit = Math.max(...allPnl);
+  const strikeMarkers = legs.map(l=>`
+    <text x="${xPix(l.strike)}" y="${H-padB+16}" fill="${l.type==='CE'?'#22C583':'#F0553D'}" font-size="9" text-anchor="middle" font-family="monospace">${fmt(l.strike,0)}</text>
+    <line x1="${xPix(l.strike)}" y1="${padT}" x2="${xPix(l.strike)}" y2="${H-padB}" stroke="${l.type==='CE'?'#22C583':'#F0553D'}" stroke-width="1" stroke-dasharray="2,3" opacity="0.4"/>
+  `).join('');
 
   container.innerHTML = `
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;">
@@ -1714,23 +1758,33 @@ function drawPayoffDiagram(strikeK, ceEntryPremium, peEntryPremium, lotSize, ste
       <line x1="${padL}" y1="${zeroY}" x2="${W-padR}" y2="${zeroY}" stroke="#555" stroke-width="1" stroke-dasharray="3,3"/>
       <line x1="${spotX}" y1="${padT}" x2="${spotX}" y2="${H-padB}" stroke="#E8A83C" stroke-width="1" stroke-dasharray="4,2"/>
       <text x="${spotX}" y="${padT-4}" fill="#E8A83C" font-size="9" text-anchor="middle" font-family="monospace">Spot ${fmt(currentSpot,0)}</text>
-
-      <path d="${pathFor('cePnl')}" fill="none" stroke="#22C583" stroke-width="2"/>
-      <path d="${pathFor('pePnl')}" fill="none" stroke="#F0553D" stroke-width="2"/>
-
+      ${strikeMarkers}
+      <path d="${path}" fill="none" stroke="#E8A83C" stroke-width="2.5"/>
       <text x="${padL-6}" y="${zeroY+3}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">₹0</text>
       <text x="${padL-6}" y="${padT+8}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">${fmt(maxPnl,0)}</text>
       <text x="${padL-6}" y="${H-padB}" fill="#7C8894" font-size="9" text-anchor="end" font-family="monospace">${fmt(minPnl,0)}</text>
-
-      <text x="${padL}" y="${H-padB+16}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">${fmt(minSpot,0)}</text>
-      <text x="${xPix(strikeK)}" y="${H-padB+16}" fill="#E8A83C" font-size="9" text-anchor="middle" font-family="monospace">${fmt(strikeK,0)} (Strike)</text>
-      <text x="${W-padR}" y="${H-padB+16}" fill="#7C8894" font-size="9" text-anchor="middle" font-family="monospace">${fmt(maxSpot,0)}</text>
     </svg>
-    <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--dim);margin-top:4px;">
-      <span>CE breakeven: <b style="color:var(--ce);">${ceBreakeven!=null?fmt(ceBreakeven,0):'—'}</b> · Max loss: ₹${fmt(ceEntryPremium*lotSize,0)}</span>
-      <span>PE breakeven: <b style="color:var(--pe);">${peBreakeven!=null?fmt(peBreakeven,0):'—'}</b> · Max loss: ₹${fmt(peEntryPremium*lotSize,0)}</span>
-    </div>
   `;
+
+  document.getElementById('payoffLegend').innerHTML = legs.map(l=>
+    `<span style="color:${l.type==='CE'?'var(--ce)':'var(--pe)'};">${l.pos>0?'Buy':'Sell'} ${l.type} @ ${fmt(l.strike,0)} (premium ${fmt(l.entryPremium)})</span>`
+  ).join('');
+
+  document.getElementById('payoffStrategySummary').innerHTML = `
+    <div class="greeks-grid" style="grid-template-columns:repeat(2,1fr);">
+      <div class="g-cell"><div class="label">Net Premium (${netPremium>=0?'Paid':'Received'})</div><div class="val" style="font-size:15px;">₹${fmt(Math.abs(netPremium)*lotSize,0)}</div></div>
+      <div class="g-cell"><div class="label">Breakeven(s)</div><div class="val" style="font-size:14px;">${breakevens.length ? breakevens.map(b=>fmt(b,0)).join(' / ') : '—'}</div></div>
+      <div class="g-cell"><div class="label">Max Profit</div><div class="val" style="color:var(--ce);font-size:15px;">${maxProfit>=pnlRange*0.9 ? 'Unlimited*' : '₹'+fmt(maxProfit,0)}</div></div>
+      <div class="g-cell"><div class="label">Max Loss</div><div class="val" style="color:var(--pe);font-size:15px;">₹${fmt(Math.abs(minPnl),0)}</div></div>
+    </div>
+    <div class="foot-note" style="margin-top:6px;">*Chart sirf ek finite range dikhata hai — agar profit line chart ke bahar bhi upar jati dikh rahi hai (jaise naked CE/PE buy mein), to real max profit "unlimited" hai (theoretically).</div>
+  `;
+}
+
+function toggleStrike2Field(){
+  const strategy = document.getElementById('payoffStrategy').value;
+  const needsStrike2 = ['strangle','bull_call_spread','bear_put_spread'].includes(strategy);
+  document.getElementById('strike2Field').style.display = needsStrike2 ? 'block' : 'none';
 }
 
 // ---- Semicircular Sentiment Needle Gauge ----
@@ -2250,7 +2304,7 @@ function renderInner(){
 
   // ---- Signal Direction Auto-detect + Risk:Reward + Rupee P&L ----
   const lotSize = Math.max(1, parseInt(document.getElementById('lotSize').value) || 75);
-  drawPayoffDiagram(tradeK, ceEntryPrice, peEntryPrice, lotSize, step, spot);
+  drawPayoffDiagram(tradeK, spot, dte, rate, divYield, iv, lotSize, step, spot);
 
   const slVal  = parseFloat(document.getElementById('lvlSL').value)  || entryLevelVal;
   const tp1Val = parseFloat(document.getElementById('lvlTP1').value) || entryLevelVal;
@@ -2578,7 +2632,7 @@ function renderDebounced(){
   renderDebounceTimer = setTimeout(render, 200);
 }
 
-['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize','dividendYield','stockSymbol','stockInstrumentKey','epmMove'].forEach(id=>{
+['spot','stepSize','iv','dte','rate','moveVal','numStrikes','lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3','vixInput','lotSize','dividendYield','stockSymbol','stockInstrumentKey','epmMove','payoffStrike2'].forEach(id=>{
   document.getElementById(id).addEventListener('input', renderDebounced);
 });
 document.getElementById('focusStrike').addEventListener('change', render);
