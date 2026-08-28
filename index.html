@@ -687,6 +687,29 @@
           </button>
           <div id="diagnosticsResults" class="section-gap"></div>
         </div>
+
+        <div class="card section-gap">
+          <h2>📼 Session Data Logger <span class="badge">for analysis</span></h2>
+          <div class="foot-note" style="margin-bottom:10px;">
+            Poore din har live-fetch pe ek detailed snapshot record hota hai (spot, IV, PCR, Max Pain, ARTH, Trade Plan status, Greeks, waghera). 2-3 din baad ye export kar ke Claude ko de do — us data se real accuracy analysis ho sakega.
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <input type="checkbox" id="loggingEnabled" onchange="toggleSessionLogging(this.checked)" style="width:auto;">
+            <label for="loggingEnabled" style="margin:0;color:var(--dim);font-size:12px;cursor:pointer;">Logging ON rakho</label>
+          </div>
+          <div id="loggingStatus" style="font-size:11px;color:var(--dim);margin-bottom:10px;"></div>
+          <div class="row2">
+            <button type="button" onclick="exportSessionLogCsv()" style="width:100%;padding:8px 0;background:none;border:1px solid var(--ce);color:var(--ce);border-radius:5px;font-family:var(--mono);font-size:11px;cursor:pointer;">
+              ⬇ Export Session Log (CSV)
+            </button>
+            <button type="button" onclick="clearSessionLog()" style="width:100%;padding:8px 0;background:none;border:1px solid var(--pe);color:var(--pe);border-radius:5px;font-family:var(--mono);font-size:11px;cursor:pointer;">
+              🗑 Clear Log
+            </button>
+          </div>
+          <div class="foot-note" style="margin-top:10px;">
+            ⚠ Honest limitation: browser tab ko <b>minimize</b> karne ya kisi doosri tab pe switch karne se, browser khud JS timers ko throttle kar deta hai (battery-saving policy, koi bhi website ise bypass nahi kar sakti). Isliye best results ke liye tab ko <b>visible/active</b> rakho. Log mein ek "tab_hidden" column bhi hai jo batayega kab tab minimize thi — agar us waqt data sparse ho to yehi wajah hogi. Agar guaranteed background logging chahiye (phone minimize karne pe bhi), Android app ka background-runner use karo (README mein detail hai).
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -888,6 +911,7 @@ async function fetchUpstoxChain(){
     status.style.color = 'var(--ce)';
     if(document.getElementById('upstoxExpiryPicker').value){ autoCalcDte(); } // keep DTE precise across auto-refresh ticks
     render();
+    logSessionSnapshot('upstox');
   } catch(err){
     console.error('Upstox fetch error:', err);
     liveChain = null;
@@ -1426,6 +1450,7 @@ async function fetchAngelGreeks(){
     status.innerHTML = `✓ Live greeks mile — ${Object.keys(chain).length} strikes. Note: is API mein LTP/premium nahi aata, sirf Greeks + IV — premium in real IV se Black-Scholes ke through calculate hoga.`;
     status.style.color = 'var(--ce)';
     render();
+    logSessionSnapshot('angel');
   } catch(err){
     console.error('Angel One fetch error:', err);
     angelChain = null;
@@ -1545,6 +1570,148 @@ function drawPcrGauge(pcrValue){
       <span>0 (Str.Bear)</span><span>0.9</span><span>1.0</span><span>1.4</span><span>2.2+ (Str.Bull)</span>
     </div>
   `;
+}
+
+// ==================================================================================
+// SESSION DATA LOGGER — for later analysis
+// ------------------------------------------------------------------------------
+// Captures a detailed snapshot every time fresh live data arrives (Upstox/Angel
+// fetch success). Includes document.visibilityState so that when this data is
+// exported and reviewed later, sparse/missing periods can be explained by the
+// tab having been hidden/minimized (browser throttles JS timers when hidden —
+// this is a browser-level power-saving policy, not something any website's code
+// can override).
+// ==================================================================================
+
+let isTabHidden = (typeof document !== 'undefined' && document.visibilityState === 'hidden');
+if(typeof document !== 'undefined'){
+  document.addEventListener('visibilitychange', () => {
+    isTabHidden = document.visibilityState === 'hidden';
+    if(!isTabHidden) importBackgroundLog(); // app came back to foreground — pull in what background collected
+  });
+}
+
+function isLoggingEnabled(){
+  try{ return localStorage.getItem('optcalc_logging_enabled') === 'true'; }
+  catch(e){ return false; }
+}
+function loadSessionLog(){
+  try{ return JSON.parse(localStorage.getItem('optcalc_session_log') || '[]'); }
+  catch(e){ return []; }
+}
+function saveSessionLog(arr){
+  try{ localStorage.setItem('optcalc_session_log', JSON.stringify(arr.slice(-5000))); } // ~several days at 30s interval
+  catch(e){
+    // localStorage full — trim harder and retry once
+    try{ localStorage.setItem('optcalc_session_log', JSON.stringify(arr.slice(-1000))); }catch(e2){ /* give up silently */ }
+  }
+}
+
+function logSessionSnapshot(source){
+  if(!isLoggingEnabled()) return;
+  try{
+    const spot = parseFloat(document.getElementById('spot').value) || null;
+    const step = parseFloat(document.getElementById('stepSize').value) || 50;
+    const atmK = spot ? Math.round(spot/step)*step : null;
+    const atmEntry = (liveChain && atmK != null) ? liveChain[atmK] : null;
+    const tradeK = parseFloat(document.getElementById('tradeStrike')?.value) || null;
+    const tLive = (liveChain && tradeK != null) ? liveChain[tradeK] : null;
+
+    const planStatus = {};
+    if(activePrediction && activePrediction.levels){
+      Object.keys(activePrediction.levels).forEach(k=>{
+        planStatus[k] = activePrediction.levels[k].resolved ? 'HIT' : 'Pending';
+      });
+    }
+
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      source: source,
+      tab_hidden: isTabHidden,
+      spot: spot,
+      atm_strike: atmK,
+      atm_ce_ltp: atmEntry?.ceLtp ?? null,
+      atm_pe_ltp: atmEntry?.peLtp ?? null,
+      atm_ce_iv: atmEntry?.ceIv ?? null,
+      atm_pe_iv: atmEntry?.peIv ?? null,
+      pcr_full: livePCR,
+      pcr_near_atm: liveNearAtmPCR,
+      max_pain: liveMaxPain,
+      highest_vol_ce_strike: liveHighestVolume?.ceStrike ?? null,
+      highest_vol_pe_strike: liveHighestVolume?.peStrike ?? null,
+      trade_plan_strike: activePrediction?.strike ?? null,
+      trade_plan_entry_status: planStatus['Entry'] ?? null,
+      trade_plan_sl_status: planStatus['SL'] ?? null,
+      trade_plan_tp1_status: planStatus['TP1'] ?? null,
+      trade_plan_tp2_status: planStatus['TP2'] ?? null,
+      trade_plan_tp3_status: planStatus['TP3'] ?? null,
+      focus_strike: tradeK,
+      focus_ce_ltp: tLive?.ceLtp ?? null,
+      focus_pe_ltp: tLive?.peLtp ?? null,
+    };
+
+    const log = loadSessionLog();
+    log.push(snapshot);
+    saveSessionLog(log);
+    updateLoggingStatusDisplay();
+  }catch(e){ console.error('Session logging error:', e); }
+}
+
+function toggleSessionLogging(enabled){
+  try{ localStorage.setItem('optcalc_logging_enabled', enabled ? 'true' : 'false'); }catch(e){}
+  updateLoggingStatusDisplay();
+}
+
+function updateLoggingStatusDisplay(){
+  const statusEl = document.getElementById('loggingStatus');
+  if(!statusEl) return;
+  const log = loadSessionLog();
+  const enabled = isLoggingEnabled();
+  if(!log.length){
+    statusEl.textContent = enabled ? '✓ Logging ON — abhi tak koi live-fetch nahi hua, snapshot pehle live pull ke baad banega.' : 'Logging abhi OFF hai.';
+    statusEl.style.color = enabled ? 'var(--ce)' : 'var(--dim)';
+    return;
+  }
+  const first = new Date(log[0].timestamp);
+  const last = new Date(log[log.length-1].timestamp);
+  const hiddenCount = log.filter(s=>s.tab_hidden).length;
+  statusEl.innerHTML = `${enabled?'✓':'⏸'} ${log.length} snapshots recorded — ${first.toLocaleString('en-IN')} se ${last.toLocaleString('en-IN')} tak. ${hiddenCount>0 ? `<span style="color:var(--amber);">${hiddenCount} snapshots tab-hidden state mein liye gaye.</span>` : ''}`;
+  statusEl.style.color = enabled ? 'var(--ce)' : 'var(--dim)';
+}
+
+function exportSessionLogCsv(){
+  const log = loadSessionLog();
+  if(!log.length){ alert('Abhi tak koi session data record nahi hua — pehle logging ON karo aur live data pull karo.'); return; }
+  downloadCsv(`session_log_${Date.now()}.csv`, log);
+}
+
+function clearSessionLog(){
+  if(!confirm('Poora session log clear ho jayega. Pakka?')) return;
+  try{ localStorage.removeItem('optcalc_session_log'); }catch(e){}
+  updateLoggingStatusDisplay();
+}
+
+// If running inside the Capacitor Android app, pull in whatever the background
+// task logged while the app was minimized, merging it into the main session log
+// so a single export captures both foreground and background-collected data.
+async function importBackgroundLog(){
+  try{
+    const prefs = window.Capacitor?.Plugins?.Preferences;
+    if(!prefs) return; // not running inside the app — nothing to import
+    const result = await prefs.get({ key: 'bg_session_log' });
+    if(!result?.value) return;
+    const bgLog = JSON.parse(result.value);
+    if(!bgLog.length) return;
+
+    const mainLog = loadSessionLog();
+    const existingTimestamps = new Set(mainLog.map(s=>s.timestamp));
+    const newEntries = bgLog.filter(s=>!existingTimestamps.has(s.timestamp));
+    if(newEntries.length){
+      const merged = [...mainLog, ...newEntries].sort((a,b)=> new Date(a.timestamp) - new Date(b.timestamp));
+      saveSessionLog(merged);
+      updateLoggingStatusDisplay();
+    }
+  }catch(e){ console.error('Background log import failed:', e); }
 }
 
 function loadIvHistory(){
@@ -2734,6 +2901,14 @@ if(document.getElementById('angelExpiryPicker').value){
 }
 
 syncToNativeBackground(); // one more sync after all restored values are in place
+
+// Restore session logging checkbox state
+if(document.getElementById('loggingEnabled')){
+  document.getElementById('loggingEnabled').checked = isLoggingEnabled();
+  updateLoggingStatusDisplay();
+}
+importBackgroundLog(); // pull in anything the background task collected since last open
+
 render();
 </script>
 </body>
