@@ -203,7 +203,7 @@
       <button type="button" onclick="autoCalcDte()" style="width:100%;margin-top:8px;padding:7px 0;background:none;border:1px solid var(--line);color:var(--amber);border-radius:5px;font-family:var(--mono);font-size:11px;cursor:pointer;">
         ⏱ Auto-calc DTE from expiry date + abhi ka time
       </button>
-      <div style="font-size:10px;color:var(--dim);margin-top:4px;">Sirf '0' ya '1' likhne se poora din ignore ho jata hai — expiry ke din bhi kai ghante time value bacha hota hai. Ye button exact fraction nikalta hai (market close 3:30 PM IST maan kar).</div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px;">Sirf '0' ya '1' likhne se poora din ignore ho jata hai — expiry ke din bhi kai ghante time value bacha hota hai. Ye button exact fraction nikalta hai (F&O market close 3:40 PM IST maan kar — Aug 2026 se CAS reform ke baad extended hua hai). Note: 3:15-3:35 PM ke beech underlying ka closing price ab auction (CAS) se decide hota hai, purane VWAP se nahi — expiry-day settlement isi se affected hota hai.</div>
       <div class="foot-note" style="margin-top:8px;">⚙️ Instrument, Proxy, Upstox/Angel tokens ab "Settings" tab mein hain (upar right side) — decluttered.</div>
 
       <h2 class="section-gap">Simulate Index Move</h2>
@@ -287,8 +287,8 @@
         <select id="tradeStrike"></select>
 
         <label>Lot Size</label>
-        <input type="number" id="lotSize" value="75" step="1">
-        <div style="font-size:10px;color:var(--dim);margin-top:4px;">NIFTY=75, BANKNIFTY=15, FINNIFTY=40, SENSEX=10 (exchange ke current lot size ke hisaab se badal lena — ye time-to-time revise hota hai).</div>
+        <input type="number" id="lotSize" value="65" step="1">
+        <div style="font-size:10px;color:var(--dim);margin-top:4px;">Jan 2026 revision ke baad: NIFTY=65, BANKNIFTY=30, FINNIFTY=60, MIDCPNIFTY=120, SENSEX=20 (SEBI periodically ye revise karta hai — exchange ki current circular check karte rehna).</div>
 
         <div class="foot-note section-gap">
           Yahan jo bhi premium dikh raha hai, wo <b>lock</b> hai — jab tak tum khud Entry/SL/TP ka number ya strike na badlo, ye value refresh hone par bhi change nahi hogi. Jab market actually us level tak pahunchega, row green ho jayegi aur "✓ HIT" dikhega, saath asli us waqt ka real premium.
@@ -1217,8 +1217,11 @@ function autoCalcDte(){
     return;
   }
   const [y,m,d] = iso.split('-').map(Number);
-  // Assume NSE market close at 15:30 IST on expiry day
-  const expiryMoment = new Date(y, m-1, d, 15, 30, 0);
+  // NSE F&O (options/futures) trading now closes at 15:40 IST (extended from 15:30
+  // since the Closing Auction Session / CAS reform took effect 3 August 2026 — cash
+  // market stops earlier at 15:15 for CAS-eligible stocks, but F&O contracts
+  // themselves keep trading until 15:40).
+  const expiryMoment = new Date(y, m-1, d, 15, 40, 0);
   const now = new Date();
   const msRemaining = expiryMoment - now;
   const daysRemaining = Math.max(0.001, msRemaining / (1000*60*60*24));
