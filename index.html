@@ -206,6 +206,10 @@
       <div style="font-size:10px;color:var(--dim);margin-top:4px;">Sirf '0' ya '1' likhne se poora din ignore ho jata hai — expiry ke din bhi kai ghante time value bacha hota hai. Ye button exact fraction nikalta hai (F&O market close 3:40 PM IST maan kar — Aug 2026 se CAS reform ke baad extended hua hai). Note: 3:15-3:35 PM ke beech underlying ka closing price ab auction (CAS) se decide hota hai, purane VWAP se nahi — expiry-day settlement isi se affected hota hai.</div>
       <div class="foot-note" style="margin-top:8px;">⚙️ Instrument, Proxy, Upstox/Angel tokens ab "Settings" tab mein hain (upar right side) — decluttered.</div>
 
+      <h2 class="section-gap">CAS Status <span class="badge">Closing Auction, Aug 2026 se</span></h2>
+      <div id="casStatusBox" style="padding:10px 12px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);font-family:var(--mono);font-size:12px;"></div>
+      <div style="font-size:10px;color:var(--dim);margin-top:4px;">3:15-3:35 PM ke beech F&amp;O-enabled stocks/index ka closing price ab purane VWAP se nahi, ek auction se decide hota hai — is window mein price behavior thoda different lag sakta hai.</div>
+
       <h2 class="section-gap">Simulate Index Move</h2>
       <label>Move index by (points, +up / -down)</label>
       <div class="move-line">
@@ -1477,6 +1481,42 @@ function setGreekType(t){
   document.querySelector(`#typeToggle button[data-type="${t}"]`).classList.add('active');
   render();
 }
+// ---- CAS (Closing Auction Session) live status ----
+// Based on the timeline confirmed via research: normal trading until 3:15 PM for
+// F&O-enabled stocks/index, then CAS auction runs 3:15-3:35 PM, F&O contracts
+// themselves keep trading until 3:40 PM, post-close session 3:50-4:00 PM.
+function updateCasStatus(){
+  const box = document.getElementById('casStatusBox');
+  if(!box) return;
+  const now = new Date();
+  const mins = now.getHours()*60 + now.getMinutes();
+  const t = (h,m) => h*60+m;
+
+  let label, color, note;
+  if(mins < t(9,15)){
+    label = 'Pre-Market'; color = 'var(--dim)'; note = 'Market abhi khula nahi hai.';
+  } else if(mins < t(15,15)){
+    label = 'Normal Trading'; color = 'var(--ce)'; note = 'CAS auction 3:15 PM se shuru hoga.';
+  } else if(mins < t(15,20)){
+    label = 'CAS: Transition'; color = 'var(--amber)'; note = 'Cash trading ruk gayi, orders collect ho rahe hain.';
+  } else if(mins < t(15,25)){
+    label = 'CAS: Market+Limit Orders'; color = 'var(--amber)'; note = 'Sirf auction orders allowed — normal price discovery nahi.';
+  } else if(mins < t(15,35)){
+    label = 'CAS: Limit Only + Random Close'; color = 'var(--pe)'; note = '⚠ Is window mein price "auction-matched" hai, normal continuous-trading jaisa nahi.';
+  } else if(mins < t(15,40)){
+    label = 'F&O Extended Window'; color = 'var(--amber)'; note = 'Cash closing price decide ho chuki — F&O (options/futures) abhi trade kar rahe hain.';
+  } else if(mins < t(15,50)){
+    label = 'Market Closed'; color = 'var(--dim)'; note = 'Trading khatam.';
+  } else if(mins < t(16,0)){
+    label = 'Post-Close Session'; color = 'var(--dim)'; note = 'Eligible trades official closing price par ho sakte hain.';
+  } else {
+    label = 'Market Closed'; color = 'var(--dim)'; note = 'Kal 9:15 AM pe khulega.';
+  }
+
+  box.innerHTML = `<span style="color:${color};font-weight:700;">● ${label}</span><div style="color:var(--dim);font-size:10.5px;margin-top:3px;">${note}</div>`;
+}
+setInterval(updateCasStatus, 30000);
+
 function bumpMove(delta){
   const el = document.getElementById('moveVal');
   el.value = (parseFloat(el.value)||0) + delta;
@@ -2911,6 +2951,7 @@ if(document.getElementById('loggingEnabled')){
   updateLoggingStatusDisplay();
 }
 importBackgroundLog(); // pull in anything the background task collected since last open
+updateCasStatus();
 
 render();
 </script>
