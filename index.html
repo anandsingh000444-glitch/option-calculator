@@ -300,6 +300,7 @@
 
         <div id="signalSummary" class="section-gap" style="padding:12px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);"></div>
         <div id="liveDataWarning" style="margin-top:8px;"></div>
+        <div id="tradePlanScaleWarning" style="margin-top:8px;"></div>
 
         <div class="table-wrap section-gap">
           <table id="tradePlanTable">
@@ -575,7 +576,7 @@
 
           <div id="indexModeFields">
             <label>Index</label>
-            <select id="indexName">
+            <select id="indexName" onchange="onIndexOrInstrumentChange()">
               <option value="NIFTY 50">NIFTY 50</option>
               <option value="BANK NIFTY">BANK NIFTY</option>
               <option value="SENSEX">SENSEX</option>
@@ -856,6 +857,15 @@ async function fetchUpstoxChain(){
     let totalCeOi = 0, totalPeOi = 0;
     let maxCeVolStrike = null, maxCeVol = -1;
     let maxPeVolStrike = null, maxPeVol = -1;
+    // Reject implausible IV readings at the source (illiquid/stale strikes can
+    // briefly report absurd IV like 800%+, confirmed from real trading data —
+    // this isn't our calculation, it's Upstox's own reported value; a null here
+    // makes every "(tLive && tLive.ceIv) || manualIv" fallback elsewhere in the
+    // app automatically use the safe manual/global IV instead).
+    function sanitizeIv(rawIv){
+      return (rawIv != null && rawIv > 0 && rawIv <= 100) ? rawIv : null;
+    }
+
     rows.forEach(r=>{
       const K = r.strike_price;
       if(spotVal===null && r.underlying_spot_price) spotVal = r.underlying_spot_price;
@@ -869,11 +879,11 @@ async function fetchUpstoxChain(){
       if(peVolume > maxPeVol){ maxPeVol = peVolume; maxPeVolStrike = K; }
       chain[K] = {
         ceLtp: r.call_options?.market_data?.ltp ?? null,
-        ceIv: r.call_options?.option_greeks?.iv ?? null,
+        ceIv: sanitizeIv(r.call_options?.option_greeks?.iv),
         ceOi: ceOi,
         ceVolume: ceVolume,
         peLtp: r.put_options?.market_data?.ltp ?? null,
-        peIv: r.put_options?.option_greeks?.iv ?? null,
+        peIv: sanitizeIv(r.put_options?.option_greeks?.iv),
         peOi: peOi,
         peVolume: peVolume,
       };
@@ -1390,6 +1400,24 @@ function toggleInstrumentType(){
   const isStock = document.getElementById('instrumentType').value === 'stock';
   document.getElementById('indexModeFields').style.display = isStock ? 'none' : 'block';
   document.getElementById('stockModeFields').style.display = isStock ? 'block' : 'none';
+  onIndexOrInstrumentChange();
+}
+
+// Switching instrument (NIFTY<->SENSEX, or Index<->Stock) was found to be the
+// single biggest cause of large prediction errors in real trading data — old
+// Entry/SL/TP1-3 values from the previous instrument's price scale were left
+// in place, producing meaningless deep-ITM/OTM "predictions" at the new
+// instrument's strikes. Reset them to the current spot so they're at least in
+// the right ballpark, and clear the locked trade plan for a clean start.
+function onIndexOrInstrumentChange(){
+  try{ localStorage.removeItem('optcalc_active_prediction'); }catch(e){}
+  activePrediction = null;
+  const spotVal = document.getElementById('spot').value;
+  if(spotVal){
+    ['lvlEntry','lvlSL','lvlTP1','lvlTP2','lvlTP3'].forEach(id=>{
+      document.getElementById(id).value = spotVal;
+    });
+  }
   render();
 }
 
@@ -1767,6 +1795,13 @@ function saveIvHistory(arr){
 }
 function snapshotIvHistory(ivValue){
   if(ivValue == null || !isFinite(ivValue)) return;
+  // Sanity filter: real trading data showed rare (~0.5% of readings) but severe
+  // IV spikes (e.g. 896%) from illiquid/stale strikes — not a bug in our code,
+  // Upstox's own reported IV briefly misbehaves for near-zero-volume options.
+  // A single such reading would badly corrupt the IV Rank min/max range for a
+  // long time (given the capped history), so reject clearly-implausible values.
+  // Index options practically never exceed ~100% IV even in extreme volatility.
+  if(ivValue <= 0 || ivValue > 100) return;
   const history = loadIvHistory();
   const last = history[history.length-1];
   // Avoid flooding history with near-duplicate samples from frequent auto-refresh —
@@ -2456,6 +2491,27 @@ function renderInner(){
     {key:'TP3',   id:'lvlTP3'},
   ];
   const entryLevelVal = parseFloat(document.getElementById('lvlEntry').value) || spot;
+
+  // ---- Sanity check: Entry/SL/TP1-3 vs current spot scale ----
+  // Real trading data revealed the single biggest source of large prediction
+  // errors: switching instrument (e.g. NIFTY -> SENSEX) or a data-entry typo
+  // leaves Entry/SL/TP at a wildly different price scale than the current
+  // strike/spot, producing a nonsensical deep-ITM/deep-OTM "prediction" that's
+  // mathematically consistent but practically meaningless. Flag it clearly.
+  const scaleWarnEl = document.getElementById('tradePlanScaleWarning');
+  if(scaleWarnEl){
+    const mismatchedLevels = levels.filter(({id})=>{
+      const val = parseFloat(document.getElementById(id).value);
+      return val && spot && Math.abs(val - spot)/spot > 0.15; // >15% away from current spot
+    });
+    if(mismatchedLevels.length){
+      scaleWarnEl.innerHTML = `<div style="font-size:11px;color:var(--pe);padding:8px 10px;border:1px solid var(--pe);border-radius:5px;background:#3A1D18;">
+        ⚠ ${mismatchedLevels.map(l=>l.key).join(', ')} current spot (${fmt(spot,0)}) se bahut door hai (&gt;15%) — ya to instrument switch kiya hai (NIFTY→SENSEX jaisa) bina levels update kiye, ya typo ho gaya hai. Predictions is case mein meaningless honge. "✎ Start New Trade Plan" dabao aur sahi levels daalo.
+      </div>`;
+    } else {
+      scaleWarnEl.innerHTML = '';
+    }
+  }
 
   // ---- Self-Learning: freeze predictions BEFORE rendering, so displayed numbers
   // don't jitter with every live refresh — they only change when you edit a level,
