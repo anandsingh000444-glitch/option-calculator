@@ -242,6 +242,7 @@
         <button type="button" id="tabBtnCalculator" onclick="switchTab('calculator')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid var(--amber);color:var(--amber);font-family:var(--mono);font-size:12.5px;cursor:pointer;">📊 Calculator</button>
         <button type="button" id="tabBtnEpmLab" onclick="switchTab('epmLab')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">🎯 EPM Lab</button>
         <button type="button" id="tabBtnSettings" onclick="switchTab('settings')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">⚙️ Settings</button>
+        <button type="button" id="tabBtnPreMarket" onclick="switchTab('premarket')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">🌅 Pre-Market</button>
       </div>
 
       <div id="tabPanelCalculator">
@@ -655,7 +656,9 @@
             <option value="NIFTY">NIFTY</option>
             <option value="BANKNIFTY">BANKNIFTY</option>
             <option value="FINNIFTY">FINNIFTY</option>
+            <option value="SENSEX">SENSEX</option>
           </select>
+          <div style="font-size:10px;color:var(--amber);margin-top:4px;">⚠ Angel One ka ye specific Greeks-endpoint sirf NSE (NFO) index options ke liye data deta hai — SENSEX (BSE/BFO) ke liye Greeks null/empty aa sakte hain, ye Angel One ki apni API ki limitation hai, humara bug nahi. SENSEX ke liye Upstox zyada reliable rahega.</div>
 
           <label>Expiry Date</label>
           <input type="date" id="angelExpiryPicker" onchange="setAngelExpiryFromPicker(this.value); autoCalcDte();">
@@ -715,6 +718,49 @@
           <div class="foot-note" style="margin-top:10px;">
             ⚠ Honest limitation: browser tab ko <b>minimize</b> karne ya kisi doosri tab pe switch karne se, browser khud JS timers ko throttle kar deta hai (battery-saving policy, koi bhi website ise bypass nahi kar sakti). Isliye best results ke liye tab ko <b>visible/active</b> rakho. Log mein ek "tab_hidden" column bhi hai jo batayega kab tab minimize thi — agar us waqt data sparse ho to yehi wajah hogi. Agar guaranteed background logging chahiye (phone minimize karne pe bhi), Android app ka background-runner use karo (README mein detail hai).
           </div>
+        </div>
+      </div>
+
+      <div id="tabPanelPreMarket" style="display:none;">
+        <div class="card">
+          <h2>🌅 Pre-Market Checklist <span class="badge">9:00 AM routine</span></h2>
+          <div class="foot-note" style="margin-bottom:12px;">
+            Market 9:15 pe khulta hai, lekin 9:00 tak ye 4 cheezein check karne ka ek popular routine hai: (1) Global markets (Dow), (2) India VIX, (3) NSE Advances/Declines, (4) Asian markets. Ye button ek click mein sab fetch karta hai.<br>
+            ⚠ Ye ek simple rule-based checklist hai jo ek trading tutorial se li gayi hai — koi backtested/validated predictive model nahi hai. Ek "lean" dikhata hai, guaranteed signal nahi.
+          </div>
+          <button type="button" id="preMarketBtn" onclick="fetchPreMarket()" style="width:100%;padding:10px 0;background:#241a0d;border:1px solid var(--amber);color:var(--amber);border-radius:5px;font-family:var(--mono);font-size:12.5px;cursor:pointer;">
+            ⤓ Fetch Pre-Market Data (saare 4 checks)
+          </button>
+          <div id="preMarketStatus" style="font-size:11px;color:var(--dim);margin-top:8px;min-height:16px;"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>Overall Verdict</h2>
+          <div id="preMarketVerdict"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>1. Global Cues <span class="badge">Dow Jones, Nasdaq, Crude, USD/INR</span></h2>
+          <div class="foot-note" style="margin-bottom:8px;">Rule: Dow/global markets up → Indian market ke up khulne ka lean; down → sentiment neeche.</div>
+          <div id="preMarketGlobal"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>2. India VIX <span class="badge">volatility check</span></h2>
+          <div class="foot-note" style="margin-bottom:8px;">Rule: VIX 15 se upar → market volatile; 15 se neeche → stable.</div>
+          <div id="preMarketVix"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>3. NSE Advances / Declines <span class="badge">market breadth</span></h2>
+          <div class="foot-note" style="margin-bottom:8px;">Rule: Advances zyada → market upar; Declines zyada → market neeche. (NSE ka koi official API nahi hai — ye best-effort/experimental hai, kabhi bhi kaam karna band ho sakta hai.)</div>
+          <div id="preMarketBreadth"></div>
+        </div>
+
+        <div class="card section-gap">
+          <h2>4. Asian Markets <span class="badge">Nikkei, Hang Seng</span></h2>
+          <div class="foot-note" style="margin-bottom:8px;">Rule: Asian markets up → Indian market bhi up; red → bullish trades mein savdhaan raho. (Note: video mein SGX/GIFT Nifty bola gaya hai, lekin GIFT Nifty ka koi free live data source nahi hai — isliye Nikkei aur Hang Seng ko Asian-trend ke proxy ki tarah use kiya hai.)</div>
+          <div id="preMarketAsia"></div>
         </div>
       </div>
     </div>
@@ -1387,8 +1433,8 @@ function selectInstrumentKey(key, tradingSymbol){
 }
 
 function switchTab(tab){
-  const panels = { calculator: 'tabPanelCalculator', epmLab: 'tabPanelEpmLab', settings: 'tabPanelSettings' };
-  const buttons = { calculator: 'tabBtnCalculator', epmLab: 'tabBtnEpmLab', settings: 'tabBtnSettings' };
+  const panels = { calculator: 'tabPanelCalculator', epmLab: 'tabPanelEpmLab', settings: 'tabPanelSettings', premarket: 'tabPanelPreMarket' };
+  const buttons = { calculator: 'tabBtnCalculator', epmLab: 'tabBtnEpmLab', settings: 'tabBtnSettings', premarket: 'tabBtnPreMarket' };
   Object.keys(panels).forEach(key=>{
     const active = key === tab;
     document.getElementById(panels[key]).style.display = active ? 'block' : 'none';
@@ -2113,6 +2159,116 @@ async function fetchGeoRisk(){
     btn.disabled = false;
     btn.textContent = '⤓ Geopolitical Risk (India)';
   }
+}
+
+async function fetchPreMarket(){
+  const btn = document.getElementById('preMarketBtn');
+  const status = document.getElementById('preMarketStatus');
+  const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
+
+  btn.disabled = true; btn.textContent = '⤓ Fetching...';
+  status.textContent = 'Saare 4 checks fetch ho rahe hain...';
+  status.style.color = 'var(--dim)';
+
+  const signals = []; // { name, lean: 'bullish'|'bearish'|'neutral', detail }
+
+  // ---- 1. Global Cues (Dow, Nasdaq, Crude, USD/INR) ----
+  try{
+    const symbols = '^DJI,^IXIC,CL=F,INR=X';
+    const resp = await fetch(`${proxyBase}/api/yahoo-quotes?symbols=${encodeURIComponent(symbols)}`, { headers: { 'Accept': 'application/json' } });
+    const json = await resp.json();
+    const items = json.data || [];
+    const dow = items.find(i=>i.symbol==='^DJI');
+    const globalDiv = document.getElementById('preMarketGlobal');
+    if(dow && dow.changePercent != null){
+      const lean = dow.changePercent > 0.15 ? 'bullish' : (dow.changePercent < -0.15 ? 'bearish' : 'neutral');
+      signals.push({ name: 'Global Cues (Dow)', lean, detail: `Dow ${dow.changePercent>=0?'+':''}${fmt(dow.changePercent,2)}%` });
+      globalDiv.innerHTML = `<div class="greeks-grid" style="grid-template-columns:repeat(2,1fr);">` + items.filter(i=>i.price!=null).map(i=>{
+        const names = {'^DJI':'Dow Jones','^IXIC':'Nasdaq','CL=F':'Crude Oil','INR=X':'USD/INR'};
+        const c = i.changePercent;
+        const col = c>=0?'var(--ce)':'var(--pe)';
+        return `<div class="g-cell"><div class="label">${names[i.symbol]||i.symbol}</div><div class="val" style="color:${col};font-size:14px;">${fmt(i.price,2)} ${c!=null?`(${c>=0?'+':''}${fmt(c,2)}%)`:''}</div></div>`;
+      }).join('') + `</div>`;
+    } else {
+      globalDiv.innerHTML = `<div class="foot-note" style="color:var(--pe);">✗ Data nahi mila.</div>`;
+    }
+  }catch(e){ document.getElementById('preMarketGlobal').innerHTML = `<div class="foot-note" style="color:var(--pe);">✗ ${e.message}</div>`; }
+
+  // ---- 2. India VIX (uses the app's own manual VIX field — simple & reliable) ----
+  try{
+    const vixVal = parseFloat(document.getElementById('vixInput').value);
+    const vixDiv = document.getElementById('preMarketVix');
+    if(vixVal){
+      const lean = 'neutral'; // VIX itself isn't directional, just a volatility flag
+      const level = vixVal > 15 ? 'Volatile' : 'Stable';
+      const color = vixVal > 15 ? 'var(--pe)' : 'var(--ce)';
+      signals.push({ name: 'India VIX', lean: 'neutral', detail: `VIX ${fmt(vixVal,1)} — ${level}` });
+      vixDiv.innerHTML = `<div class="g-cell hi"><div class="label">India VIX</div><div class="val" style="color:${color};">${fmt(vixVal,1)} — ${level}</div></div><div class="foot-note" style="margin-top:6px;">Ye "Market Sentiment" card ke VIX field se liya gaya hai — wahan update karoge to yahan bhi reflect hoga.</div>`;
+    } else {
+      vixDiv.innerHTML = `<div class="foot-note">Market Sentiment card mein VIX daalo pehle.</div>`;
+    }
+  }catch(e){}
+
+  // ---- 3. NSE Advances/Declines (experimental) ----
+  try{
+    const resp = await fetch(`${proxyBase}/api/nse-breadth`, { headers: { 'Accept': 'application/json' } });
+    const json = await resp.json();
+    const breadthDiv = document.getElementById('preMarketBreadth');
+    if(json.nifty50 && json.nifty50.advances != null){
+      const adv = json.nifty50.advances, dec = json.nifty50.declines;
+      const lean = adv > dec ? 'bullish' : (dec > adv ? 'bearish' : 'neutral');
+      signals.push({ name: 'NSE Breadth', lean, detail: `Advances ${adv} vs Declines ${dec}` });
+      breadthDiv.innerHTML = `<div class="greeks-grid" style="grid-template-columns:repeat(2,1fr);">
+        <div class="g-cell"><div class="label">Advances</div><div class="val" style="color:var(--ce);">${adv}</div></div>
+        <div class="g-cell"><div class="label">Declines</div><div class="val" style="color:var(--pe);">${dec}</div></div>
+      </div>`;
+    } else {
+      breadthDiv.innerHTML = `<div class="foot-note" style="color:var(--pe);">✗ NSE se data nahi mila (${json.error || 'unknown'}) — ye experimental integration hai, NSE unofficial endpoints block/change kar sakta hai.</div>`;
+    }
+  }catch(e){ document.getElementById('preMarketBreadth').innerHTML = `<div class="foot-note" style="color:var(--pe);">✗ ${e.message}</div>`; }
+
+  // ---- 4. Asian Markets (Nikkei, Hang Seng — GIFT Nifty has no free live source) ----
+  try{
+    const symbols = '^N225,^HSI';
+    const resp = await fetch(`${proxyBase}/api/yahoo-quotes?symbols=${encodeURIComponent(symbols)}`, { headers: { 'Accept': 'application/json' } });
+    const json = await resp.json();
+    const items = json.data || [];
+    const asiaDiv = document.getElementById('preMarketAsia');
+    const validItems = items.filter(i=>i.changePercent!=null);
+    if(validItems.length){
+      const avgChange = validItems.reduce((s,i)=>s+i.changePercent,0)/validItems.length;
+      const lean = avgChange > 0.15 ? 'bullish' : (avgChange < -0.15 ? 'bearish' : 'neutral');
+      signals.push({ name: 'Asian Markets', lean, detail: `Avg ${avgChange>=0?'+':''}${fmt(avgChange,2)}%` });
+      asiaDiv.innerHTML = `<div class="greeks-grid" style="grid-template-columns:repeat(2,1fr);">` + items.map(i=>{
+        const names = {'^N225':'Nikkei 225','^HSI':'Hang Seng'};
+        const c = i.changePercent;
+        const col = (c!=null && c>=0)?'var(--ce)':'var(--pe)';
+        return `<div class="g-cell"><div class="label">${names[i.symbol]||i.symbol}</div><div class="val" style="color:${col};font-size:14px;">${i.price!=null?fmt(i.price,0):'—'} ${c!=null?`(${c>=0?'+':''}${fmt(c,2)}%)`:''}</div></div>`;
+      }).join('') + `</div>`;
+    } else {
+      asiaDiv.innerHTML = `<div class="foot-note" style="color:var(--pe);">✗ Data nahi mila.</div>`;
+    }
+  }catch(e){ document.getElementById('preMarketAsia').innerHTML = `<div class="foot-note" style="color:var(--pe);">✗ ${e.message}</div>`; }
+
+  // ---- Combined Verdict ----
+  const bullCount = signals.filter(s=>s.lean==='bullish').length;
+  const bearCount = signals.filter(s=>s.lean==='bearish').length;
+  const directional = signals.filter(s=>s.lean!=='neutral');
+  let verdictLabel, verdictColor;
+  if(!directional.length){ verdictLabel = 'Not enough data'; verdictColor = 'var(--dim)'; }
+  else if(bullCount > bearCount){ verdictLabel = `Mild Bullish Lean (${bullCount}/${directional.length} signals)`; verdictColor = 'var(--ce)'; }
+  else if(bearCount > bullCount){ verdictLabel = `Mild Bearish Lean (${bearCount}/${directional.length} signals)`; verdictColor = 'var(--pe)'; }
+  else { verdictLabel = 'Mixed / Neutral'; verdictColor = 'var(--amber)'; }
+
+  document.getElementById('preMarketVerdict').innerHTML = `
+    <div style="font-family:var(--mono);font-size:18px;color:${verdictColor};font-weight:700;margin-bottom:8px;">${verdictLabel}</div>
+    <div style="font-size:11px;color:var(--dim);">${signals.map(s=>`${s.name}: ${s.detail}`).join(' · ')}</div>
+    <div class="foot-note" style="margin-top:8px;">⚠ Ye 4 simple rules ka combination hai (ek trading tutorial se), koi backtested model nahi. Sirf ek starting-point lean samjho, apni khud ki analysis ki jagah nahi.</div>
+  `;
+
+  status.textContent = '✓ Sab checks complete';
+  status.style.color = 'var(--ce)';
+  btn.disabled = false; btn.textContent = '⤓ Fetch Pre-Market Data (saare 4 checks)';
 }
 
 async function fetchGlobalCues(){
