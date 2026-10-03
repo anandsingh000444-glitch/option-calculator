@@ -10,6 +10,8 @@
     { "src": "api/gdelt.js", "use": "@vercel/node" },
     { "src": "api/yahoo-quotes.js", "use": "@vercel/node" },
     { "src": "api/upstox-instrument-lookup.js", "use": "@vercel/node", "config": { "maxDuration": 60 } },
+    { "src": "api/nse-breadth.js", "use": "@vercel/node" },
+    { "src": "api/ai-news-analysis.js", "use": "@vercel/node", "config": { "maxDuration": 30 } },
     { "src": "index.html", "use": "@vercel/static" }
   ],
   "routes": [
@@ -22,6 +24,8 @@
     { "src": "/api/gdelt",        "dest": "/api/gdelt.js" },
     { "src": "/api/yahoo-quotes", "dest": "/api/yahoo-quotes.js" },
     { "src": "/api/upstox-instrument-lookup", "dest": "/api/upstox-instrument-lookup.js" },
+    { "src": "/api/nse-breadth",  "dest": "/api/nse-breadth.js" },
+    { "src": "/api/ai-news-analysis", "dest": "/api/ai-news-analysis.js" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
