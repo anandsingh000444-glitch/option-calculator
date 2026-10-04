@@ -488,6 +488,17 @@
         </div>
 
         <div id="newsFeedList" class="section-gap"></div>
+
+        <h2 class="section-gap">🤖 AI News Analysis <span class="badge">Hinglish — NVIDIA Nemotron (free)</span></h2>
+        <div class="foot-note" style="margin-bottom:10px;">
+          Recent news ko fetch karke NVIDIA ke free Nemotron model se analyze karwata hai — "in headlines mein se kya India market ke liye relevant hai, kya impact ho sakta hai" — Hinglish mein, jaise ek trader doosre ko samjha raha ho.
+          <br>⚠ Free tier hai, lekin <b>rate-limited</b> hai (~40 requests/minute per key, build.nvidia.com pe current limit check kar lena) — isliye auto-refresh pe mat lagana, manually hi dabana.
+        </div>
+        <button type="button" id="aiAnalysisBtn" onclick="fetchAiAnalysis()" style="width:100%;padding:9px 0;background:#1a1a2e;border:1px solid #9b7fd4;color:#c9b8f0;border-radius:5px;font-family:var(--mono);font-size:12px;cursor:pointer;">
+          🤖 Analyze News (Hinglish)
+        </button>
+        <div id="aiAnalysisStatus" style="font-size:11px;color:var(--dim);margin-top:8px;"></div>
+        <div id="aiAnalysisResult" class="section-gap"></div>
       </div>
 
       <div class="card section-gap">
@@ -2322,6 +2333,39 @@ async function fetchGlobalCues(){
   } finally {
     btn.disabled = false;
     btn.textContent = '⤓ Global Market Cues';
+  }
+}
+
+async function fetchAiAnalysis(){
+  const btn = document.getElementById('aiAnalysisBtn');
+  const status = document.getElementById('aiAnalysisStatus');
+  const resultDiv = document.getElementById('aiAnalysisResult');
+  const proxyBase = document.getElementById('proxyBase').value.trim().replace(/\/$/,'');
+  const query = document.getElementById('newsQuery').value.trim() || 'NIFTY,SENSEX,India stock market';
+
+  btn.disabled = true; btn.textContent = '🤖 Analyzing...';
+  status.textContent = 'News fetch karke Claude se analyze karwa raha hoon (10-20 second lag sakte hain)...';
+  status.style.color = 'var(--dim)';
+  resultDiv.innerHTML = '';
+
+  try{
+    const url = `${proxyBase}/api/ai-news-analysis?symbols=${encodeURIComponent(query)}`;
+    const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const json = await resp.json();
+    if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+    resultDiv.innerHTML = `
+      <div style="padding:14px;border-radius:6px;border:1px solid #9b7fd4;background:#1a1a2e;white-space:pre-wrap;line-height:1.6;font-size:13px;">${json.analysis}</div>
+      <div class="foot-note" style="margin-top:6px;">${json.source_count} headlines base par — AI analysis hai, financial advice nahi. Apni khud ki research ke saath cross-check karo.</div>
+    `;
+    status.textContent = '✓ Analysis complete';
+    status.style.color = 'var(--ce)';
+  }catch(err){
+    console.error('AI analysis error:', err);
+    status.textContent = '✗ ' + (err.message || String(err));
+    status.style.color = 'var(--pe)';
+  }finally{
+    btn.disabled = false; btn.textContent = '🤖 Analyze News (Hinglish)';
   }
 }
 
