@@ -243,6 +243,7 @@
         <button type="button" id="tabBtnEpmLab" onclick="switchTab('epmLab')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">🎯 EPM Lab</button>
         <button type="button" id="tabBtnSettings" onclick="switchTab('settings')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">⚙️ Settings</button>
         <button type="button" id="tabBtnPreMarket" onclick="switchTab('premarket')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">🌅 Pre-Market</button>
+        <button type="button" id="tabBtnAiAnalysis" onclick="switchTab('aiAnalysis')" style="padding:10px 18px;background:none;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:var(--mono);font-size:12.5px;cursor:pointer;">🤖 AI Analysis</button>
       </div>
 
       <div id="tabPanelCalculator">
@@ -488,17 +489,6 @@
         </div>
 
         <div id="newsFeedList" class="section-gap"></div>
-
-        <h2 class="section-gap">🤖 AI News Analysis <span class="badge">Hinglish — NVIDIA Nemotron (free)</span></h2>
-        <div class="foot-note" style="margin-bottom:10px;">
-          Recent news ko fetch karke NVIDIA ke free Nemotron model se analyze karwata hai — "in headlines mein se kya India market ke liye relevant hai, kya impact ho sakta hai" — Hinglish mein, jaise ek trader doosre ko samjha raha ho.
-          <br>⚠ Free tier hai, lekin <b>rate-limited</b> hai (~40 requests/minute per key, build.nvidia.com pe current limit check kar lena) — isliye auto-refresh pe mat lagana, manually hi dabana.
-        </div>
-        <button type="button" id="aiAnalysisBtn" onclick="fetchAiAnalysis()" style="width:100%;padding:9px 0;background:#1a1a2e;border:1px solid #9b7fd4;color:#c9b8f0;border-radius:5px;font-family:var(--mono);font-size:12px;cursor:pointer;">
-          🤖 Analyze News (Hinglish)
-        </button>
-        <div id="aiAnalysisStatus" style="font-size:11px;color:var(--dim);margin-top:8px;"></div>
-        <div id="aiAnalysisResult" class="section-gap"></div>
       </div>
 
       <div class="card section-gap">
@@ -772,6 +762,21 @@
           <h2>4. Asian Markets <span class="badge">Nikkei, Hang Seng</span></h2>
           <div class="foot-note" style="margin-bottom:8px;">Rule: Asian markets up → Indian market bhi up; red → bullish trades mein savdhaan raho. (Note: video mein SGX/GIFT Nifty bola gaya hai, lekin GIFT Nifty ka koi free live data source nahi hai — isliye Nikkei aur Hang Seng ko Asian-trend ke proxy ki tarah use kiya hai.)</div>
           <div id="preMarketAsia"></div>
+        </div>
+      </div>
+
+      <div id="tabPanelAiAnalysis" style="display:none;">
+        <div class="card">
+          <h2>🤖 AI News Analysis <span class="badge">Hinglish — NVIDIA Nemotron (free)</span></h2>
+          <div class="foot-note" style="margin-bottom:10px;">
+            Recent news ko fetch karke NVIDIA ke free Nemotron model se analyze karwata hai — "in headlines mein se kya India market ke liye relevant hai, kya impact ho sakta hai" — Hinglish mein, jaise ek trader doosre ko samjha raha ho. Search keywords "Market News & Sentiment" card (Calculator tab) ke "Search Symbols/Keywords" field se liye jaate hain.
+            <br>⚠ Free tier hai, lekin <b>rate-limited</b> hai (~40 requests/minute per key, build.nvidia.com pe current limit check kar lena) — isliye auto-refresh pe mat lagana, manually hi dabana.
+          </div>
+          <button type="button" id="aiAnalysisBtn" onclick="fetchAiAnalysis()" style="width:100%;padding:9px 0;background:#1a1a2e;border:1px solid #9b7fd4;color:#c9b8f0;border-radius:5px;font-family:var(--mono);font-size:12px;cursor:pointer;">
+            🤖 Analyze News (Hinglish)
+          </button>
+          <div id="aiAnalysisStatus" style="font-size:11px;color:var(--dim);margin-top:8px;"></div>
+          <div id="aiAnalysisResult" class="section-gap"></div>
         </div>
       </div>
     </div>
@@ -1444,8 +1449,8 @@ function selectInstrumentKey(key, tradingSymbol){
 }
 
 function switchTab(tab){
-  const panels = { calculator: 'tabPanelCalculator', epmLab: 'tabPanelEpmLab', settings: 'tabPanelSettings', premarket: 'tabPanelPreMarket' };
-  const buttons = { calculator: 'tabBtnCalculator', epmLab: 'tabBtnEpmLab', settings: 'tabBtnSettings', premarket: 'tabBtnPreMarket' };
+  const panels = { calculator: 'tabPanelCalculator', epmLab: 'tabPanelEpmLab', settings: 'tabPanelSettings', premarket: 'tabPanelPreMarket', aiAnalysis: 'tabPanelAiAnalysis' };
+  const buttons = { calculator: 'tabBtnCalculator', epmLab: 'tabBtnEpmLab', settings: 'tabBtnSettings', premarket: 'tabBtnPreMarket', aiAnalysis: 'tabBtnAiAnalysis' };
   Object.keys(panels).forEach(key=>{
     const active = key === tab;
     document.getElementById(panels[key]).style.display = active ? 'block' : 'none';
@@ -2348,11 +2353,32 @@ async function fetchAiAnalysis(){
   status.style.color = 'var(--dim)';
   resultDiv.innerHTML = '';
 
+  // Safely turn any error shape (string, object, Error, nested {error:{message}}, etc.)
+  // into a readable string — never let a raw object render as "[object Object]".
+  function extractErrorMessage(val, fallback){
+    if(!val) return fallback;
+    if(typeof val === 'string') return val;
+    if(val.message && typeof val.message === 'string') return val.message;
+    if(val.error) return extractErrorMessage(val.error, fallback);
+    try{ const s = JSON.stringify(val); return s && s !== '{}' ? s : fallback; }catch(e){ return fallback; }
+  }
+
   try{
     const url = `${proxyBase}/api/ai-news-analysis?symbols=${encodeURIComponent(query)}`;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    const json = await resp.json();
-    if(!resp.ok) throw new Error(json.error || `HTTP ${resp.status}`);
+
+    let json;
+    const rawText = await resp.text();
+    try{ json = JSON.parse(rawText); }
+    catch(e){
+      // Response wasn't JSON at all (e.g. the proxy file isn't deployed yet, so
+      // this request fell through to index.html, or Vercel returned its own
+      // HTML error page) — surface that clearly instead of a cryptic parse error.
+      throw new Error(`Proxy se JSON nahi mila (status ${resp.status}) — ho sakta hai 'ai-news-analysis.js' abhi deploy nahi hua, ya galat URL hai.`);
+    }
+
+    if(!resp.ok) throw new Error(extractErrorMessage(json.error, `HTTP ${resp.status}`));
+    if(!json.analysis) throw new Error('Response mein analysis text nahi mila — raw response: ' + JSON.stringify(json).slice(0,200));
 
     resultDiv.innerHTML = `
       <div style="padding:14px;border-radius:6px;border:1px solid #9b7fd4;background:#1a1a2e;white-space:pre-wrap;line-height:1.6;font-size:13px;">${json.analysis}</div>
@@ -2362,7 +2388,7 @@ async function fetchAiAnalysis(){
     status.style.color = 'var(--ce)';
   }catch(err){
     console.error('AI analysis error:', err);
-    status.textContent = '✗ ' + (err.message || String(err));
+    status.textContent = '✗ ' + extractErrorMessage(err, 'Unknown error — console check karo (F12) detail ke liye.');
     status.style.color = 'var(--pe)';
   }finally{
     btn.disabled = false; btn.textContent = '🤖 Analyze News (Hinglish)';
